@@ -1,6 +1,6 @@
 # AIGrader / AI 阅卷助手
 
-当前进度：**Phase 6 Windows Portable**。项目包含 Windows x64 的 PyInstaller onedir 构建、ZIP 打包脚本和 GitHub Actions；无需安装 Python、无需管理员权限，解压后运行 `AIGrader.exe`。自动模式仍保持 Phase 5 的试改门槛和全部安全暂停条件。
+当前进度：**AIGrader V1.0 收尾完成**。项目包含安全 API 设置、任务级自动化配置、规则版本绑定试改、人工复核提交/继续、Windows x64 Portable 构建和 GitHub Actions。自动模式仍保持试改门槛和全部安全暂停条件。
 
 原型用于逐项验证固定区域截图、DeepSeek 视觉识别与结构化评分、坐标输入和显式确认后的提交。所有 AI 输出都会先做硬验证；`need_review`、非法分数、无效 JSON、未显式启用或暂停状态均禁止网页操作。
 
@@ -16,7 +16,7 @@ python -m pip install -e ".[dev,windows]"
 Copy-Item .env.example .env
 ```
 
-在 `.env` 填入 `DEEPSEEK_API_KEY`。密钥文件已被 Git 忽略。默认模型为 DeepSeek 官方[图像理解文档](https://api-docs.deepseek.com/zh-cn/guides/vision/)所列、支持图片输入的 `deepseek-flash`，可通过 `DEEPSEEK_MODEL` 覆盖。
+开发环境可在 `.env` 填入 `DEEPSEEK_API_KEY`；Windows 正式版应在“AI 设置”中保存到 Credential Manager。密钥不会写入任务 JSON 或 `settings.json`。默认模型为 DeepSeek 官方[图像理解文档](https://api-docs.deepseek.com/zh-cn/guides/vision/)所列、支持图片输入的 `deepseek-flash`。
 
 ## Phase 2：配置真实题目
 
@@ -47,11 +47,11 @@ aigrader ui
 - 推荐 Windows 显示缩放 100%
 - DeepSeek API Key
 
-从 GitHub Actions 下载 `AIGrader-v0.6.0-Windows-x64.zip`，完整解压 `AIGrader-Windows-x64` 文件夹后双击 `AIGrader.exe`。不能只复制 EXE，因为旁边的运行库也是程序的一部分。程序不需要管理员权限，也不执行安装。
+从 GitHub Actions 下载 `AIGrader-v1.0.0-Windows-x64.zip`，完整解压 `AIGrader-Windows-x64` 文件夹后双击 `AIGrader.exe`。不能只复制 EXE，因为旁边的运行库也是程序的一部分。程序不需要管理员权限，也不执行安装。
 
 首次使用：
 
-1. 在 `%LOCALAPPDATA%\AIGrader\.env` 写入 `DEEPSEEK_API_KEY=你的密钥`。
+1. 点击“AI 设置”，输入 DeepSeek API Key、默认模型和 Base URL，并测试连接。Windows 会将密钥保存到 Credential Manager。
 2. 新建阅卷任务，配置题目和评分标准。
 3. 标定答案区域、分数输入框、提交按钮和阅卷进度标记。
 4. 用 Dry Run 检查真实答案。
@@ -65,10 +65,17 @@ aigrader ui
 ```powershell
 python -m pip install -e ".[dev,windows,portable]"
 pytest
-./scripts/build_windows.ps1 -Version "0.6.0"
+./scripts/build_windows.ps1 -Version "1.0.0"
 ```
 
-输出为 `dist/AIGrader-Windows-x64/` 和 `dist/AIGrader-v0.6.0-Windows-x64.zip`。macOS 不交叉生成 Windows EXE；仓库的 [Windows 构建工作流](.github/workflows/windows-build.yml) 使用 `windows-latest`、Python 3.12 x64，先测试再打包并上传 artifact。推送 `v*` 标签时还会自动创建 GitHub Release。真实无 Python 环境验收见 [Phase 6 清单](PHASE6_CHECKLIST.md)。
+输出为 `dist/AIGrader-Windows-x64/` 和 `dist/AIGrader-v1.0.0-Windows-x64.zip`。macOS 不交叉生成 Windows EXE；仓库的 [Windows 构建工作流](.github/workflows/windows-build.yml) 使用 `windows-latest`、Python 3.12 x64，先测试再打包并上传 artifact。推送 `v*` 标签时还会自动创建 GitHub Release。真实无 Python 环境验收见 [Phase 6 清单](PHASE6_CHECKLIST.md)。
+
+## V1 安全收尾
+
+- API Key：Windows Credential Manager 持久化；“测试连接”会校验凭据和模型列表。
+- 人工复核：`need_review` 后输入人工总分和错判原因，程序验证分数、提交、确认下一页后自动继续；任何失败都保持暂停。
+- 规则绑定：自动模式资格同时匹配任务 ID、规则版本和评分内容指纹。修改题目或评分规则后必须重新试改。
+- 任务设置：观察时间、连续上限/无限制以及暂停、继续、停止快捷键随任务 JSON 保存；旧任务会使用安全默认值并继续兼容。
 
 ## Phase 5：自动模式
 

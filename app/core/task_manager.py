@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,7 +15,22 @@ SUPPORTED_QUESTION_IMAGES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 
 def grading_signature(task: Task) -> tuple:
-    return task.max_score, task.score_step, task.question, task.rubric
+    return task.provider, task.model, task.max_score, task.score_step, task.question, task.rubric
+
+
+def grading_fingerprint(task: Task) -> str:
+    payload = task.to_dict()
+    grading = {
+        "provider": task.provider,
+        "model": task.model,
+        "rule_version": task.rule_version,
+        "max_score": payload["max_score"],
+        "score_step": payload["score_step"],
+        "question": payload["question"],
+        "rubric": payload["rubric"],
+    }
+    encoded = json.dumps(grading, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def ensure_rule_version(original: Task | None, updated: Task) -> Task:

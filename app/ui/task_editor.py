@@ -130,7 +130,14 @@ class RubricItemEditor(QGroupBox):
 class TaskEditorDialog(QDialog):
     task_saved = Signal(object, object)
 
-    def __init__(self, task_path: Path, task: Task | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        task_path: Path,
+        task: Task | None = None,
+        parent: QWidget | None = None,
+        *,
+        default_model: str = "deepseek-flash",
+    ) -> None:
         super().__init__(parent)
         self.task_path = task_path.resolve()
         self.original_task = task
@@ -149,7 +156,7 @@ class TaskEditorDialog(QDialog):
         self.score_step = self._score_box(float(task.score_step) if task else 1)
         self.provider = QComboBox()
         self.provider.addItem("DeepSeek", "deepseek")
-        self.model = QLineEdit(task.model if task else "deepseek-flash")
+        self.model = QLineEdit(task.model if task else default_model)
         self.rule_version = QSpinBox()
         self.rule_version.setRange(1, 9999)
         self.rule_version.setValue(task.rule_version if task else 1)
@@ -162,6 +169,31 @@ class TaskEditorDialog(QDialog):
         general_form.addRow("模型*", self.model)
         general_form.addRow("评分规则版本", self.rule_version)
         root.addWidget(general)
+
+        automation = QGroupBox("自动化设置")
+        automation_form = QFormLayout(automation)
+        self.observation_delay = QDoubleSpinBox()
+        self.observation_delay.setRange(0, 5)
+        self.observation_delay.setSingleStep(0.5)
+        self.observation_delay.setValue(task.observation_delay if task else 1.0)
+        self.max_continuous = QSpinBox()
+        self.max_continuous.setRange(1, 10000)
+        self.max_continuous.setValue(task.max_continuous if task and task.max_continuous else 100)
+        self.unlimited = QCheckBox("无限制")
+        self.unlimited.setChecked(bool(task and task.max_continuous is None))
+        self.max_continuous.setEnabled(not self.unlimited.isChecked())
+        maximum_row = QHBoxLayout()
+        maximum_row.addWidget(self.max_continuous)
+        maximum_row.addWidget(self.unlimited)
+        self.pause_hotkey = QLineEdit(task.pause_hotkey if task else "f8")
+        self.resume_hotkey = QLineEdit(task.resume_hotkey if task else "f9")
+        self.stop_hotkey = QLineEdit(task.stop_hotkey if task else "ctrl+alt+q")
+        automation_form.addRow("提交前观察秒数", self.observation_delay)
+        automation_form.addRow("最大连续阅卷", maximum_row)
+        automation_form.addRow("暂停快捷键", self.pause_hotkey)
+        automation_form.addRow("继续快捷键", self.resume_hotkey)
+        automation_form.addRow("紧急停止快捷键", self.stop_hotkey)
+        root.addWidget(automation)
 
         question_group = QGroupBox("题目")
         question_layout = QVBoxLayout(question_group)
@@ -247,6 +279,11 @@ class TaskEditorDialog(QDialog):
             widget.textChanged.connect(lambda _text: self.schedule_save())
         for widget in (self.max_score, self.score_step):
             widget.valueChanged.connect(lambda _value: self.schedule_save())
+        for widget in (self.observation_delay, self.max_continuous):
+            widget.valueChanged.connect(lambda _value: self.schedule_save())
+        self.unlimited.toggled.connect(self._toggle_unlimited)
+        for widget in (self.pause_hotkey, self.resume_hotkey, self.stop_hotkey):
+            widget.textChanged.connect(lambda _text: self.schedule_save())
         self.rule_version.valueChanged.connect(lambda _value: self.schedule_save())
         self.question_text.textChanged.connect(lambda: self.schedule_save())
         self.supplemental.textChanged.connect(lambda: self.schedule_save())
@@ -309,6 +346,11 @@ class TaskEditorDialog(QDialog):
             rule_version=self.rule_version.value(),
             question=Question(self.question_text.toPlainText().strip(), self.question_image_path),
             rubric=Rubric(tuple(editor.to_model() for editor in self.item_editors), self.supplemental.toPlainText().strip()),
+            observation_delay=self.observation_delay.value(),
+            max_continuous=None if self.unlimited.isChecked() else self.max_continuous.value(),
+            pause_hotkey=self.pause_hotkey.text().strip().lower(),
+            resume_hotkey=self.resume_hotkey.text().strip().lower(),
+            stop_hotkey=self.stop_hotkey.text().strip().lower(),
         )
         versioned = ensure_rule_version(self.original_task, task)
         if versioned.rule_version != task.rule_version:
@@ -317,6 +359,10 @@ class TaskEditorDialog(QDialog):
             self.rule_version.setValue(task.rule_version)
             self.rule_version.blockSignals(False)
         return task
+
+    def _toggle_unlimited(self, checked: bool) -> None:
+        self.max_continuous.setEnabled(not checked)
+        self.schedule_save()
 
     def schedule_save(self) -> None:
         self.dirty = True

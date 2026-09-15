@@ -6,7 +6,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 
 project_root = Path(SPECPATH).parent
-hiddenimports = collect_submodules("PIL") + ["keyboard", "mss"]
+hiddenimports = collect_submodules("PIL") + ["keyboard", "mss", "win32cred", "pywintypes"]
 
 analysis = Analysis(
     [str(project_root / "app" / "portable.py")],

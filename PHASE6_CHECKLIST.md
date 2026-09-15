@@ -1,12 +1,12 @@
 # Phase 6 Windows Portable 验收清单
 
-版本：0.6.0  
+版本：1.0.0
 目标：Windows 10/11 x64 无 Python 环境
 
 ## 构建产物
 
 - [ ] GitHub Actions 的 Windows job 通过全部测试。
-- [ ] 下载的 artifact 名为 `AIGrader-v0.6.0-Windows-x64`。
+- [ ] 下载的 artifact 名为 `AIGrader-v1.0.0-Windows-x64`。
 - [ ] ZIP 内包含 `AIGrader-Windows-x64/AIGrader.exe`、运行库和 `README.txt`。
 - [ ] `v*` 标签会创建 GitHub Release 并附加同名 ZIP。
 
@@ -19,7 +19,7 @@
 
 ## 用户数据
 
-- [ ] `%LOCALAPPDATA%\AIGrader\.env` 中的 DeepSeek Key 可以读取。
+- [ ] “AI 设置”将 DeepSeek Key 写入 Windows Credential Manager。
 - [ ] 新任务默认保存到 `%LOCALAPPDATA%\AIGrader\tasks`。
 - [ ] 标定、数据库、日志和异常截图保存在用户数据目录，不写入程序目录。
 - [ ] 替换整个程序文件夹升级后，历史任务、试改记录和日志仍存在。

@@ -11,6 +11,7 @@ from pathlib import Path
 from app.ai.schemas import GradeResult
 from app.data.models import Task
 from app.data.trial_models import ErrorCategory, ReviewOutcome, TrialMetrics, TrialRecord, TrialSession
+from app.core.task_manager import grading_fingerprint
 
 
 class TrialRepository:
@@ -36,7 +37,9 @@ class TrialRepository:
                     task_id TEXT NOT NULL,
                     target_count INTEGER NOT NULL CHECK(target_count > 0),
                     error_threshold_percent TEXT NOT NULL,
-                    started_at TEXT NOT NULL
+                    started_at TEXT NOT NULL,
+                    rule_version INTEGER NOT NULL DEFAULT 1,
+                    grading_fingerprint TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS trial_records (
                     record_id TEXT PRIMARY KEY,
@@ -59,6 +62,17 @@ class TrialRepository:
                 );
                 """
             )
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(trial_sessions)").fetchall()
+            }
+            if "rule_version" not in columns:
+                connection.execute(
+                    "ALTER TABLE trial_sessions ADD COLUMN rule_version INTEGER NOT NULL DEFAULT 1"
+                )
+            if "grading_fingerprint" not in columns:
+                connection.execute(
+                    "ALTER TABLE trial_sessions ADD COLUMN grading_fingerprint TEXT NOT NULL DEFAULT ''"
+                )
 
     def create_session(self, task: Task, *, target_count: int = 100, error_threshold_percent: Decimal = Decimal("5")) -> TrialSession:
         if target_count <= 0:
@@ -67,14 +81,18 @@ class TrialRepository:
             raise ValueError("错判率阈值必须在 0～100% 之间")
         session = TrialSession(
             str(uuid.uuid4()), task.task_id, target_count, error_threshold_percent,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(timezone.utc).isoformat(), task.rule_version, grading_fingerprint(task),
         )
         with self.connect() as connection:
             connection.execute(
-                "INSERT INTO trial_sessions VALUES (?, ?, ?, ?, ?)",
+                """INSERT INTO trial_sessions (
+                    session_id, task_id, target_count, error_threshold_percent, started_at,
+                    rule_version, grading_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session.session_id, session.task_id, session.target_count,
                     str(session.error_threshold_percent), session.started_at,
+                    session.rule_version, session.grading_fingerprint,
                 ),
             )
         return session
@@ -250,23 +268,28 @@ class TrialRepository:
                 counts[row["error_category"]] = int(row["total"])
         return counts
 
-    def latest_qualifying_session(self, task_id: str) -> TrialSession | None:
+    def latest_qualifying_session(self, task: Task) -> TrialSession | None:
+        fingerprint = grading_fingerprint(task)
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM trial_sessions WHERE task_id = ? ORDER BY started_at DESC",
-                (task_id,),
+                """SELECT * FROM trial_sessions
+                WHERE task_id = ? AND rule_version = ? AND grading_fingerprint = ?
+                ORDER BY started_at DESC""",
+                (task.task_id, task.rule_version, fingerprint),
             ).fetchall()
         for row in rows:
             metrics = self.metrics(row["session_id"])
             with self.connect() as connection:
                 unresolved_reviews = connection.execute(
                     """SELECT COUNT(*) AS total FROM trial_records
-                    WHERE session_id = ? AND need_review = 1 AND outcome = ?""",
+                    WHERE session_id = ? AND need_review = 1
+                    AND (outcome = ? OR submitted = 0)""",
                     (row["session_id"], ReviewOutcome.UNREVIEWED.value),
                 ).fetchone()["total"]
             if metrics.meets_reference_condition and not unresolved_reviews:
                 return TrialSession(
                     row["session_id"], row["task_id"], int(row["target_count"]),
                     Decimal(row["error_threshold_percent"]), row["started_at"],
+                    int(row["rule_version"]), row["grading_fingerprint"],
                 )
         return None

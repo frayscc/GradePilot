@@ -25,12 +25,12 @@ def test_portable_build_files_match_release_version() -> None:
     version_info = (PROJECT_ROOT / "packaging/windows_version_info.txt").read_text(encoding="utf-8")
     script = (PROJECT_ROOT / "scripts/build_windows.ps1").read_text(encoding="utf-8")
 
-    assert 'version = "0.6.0"' in pyproject
-    assert app.__version__ == "0.6.0"
+    assert 'version = "1.0.0"' in pyproject
+    assert app.__version__ == "1.0.0"
     assert "windows-latest" in workflow and 'python-version: "3.12"' in workflow
     assert "pytest" in workflow and "PyInstaller" in spec
     assert 'name="AIGrader-Windows-x64"' in spec
-    assert "0.6.0" in version_info
+    assert "1.0.0" in version_info
     assert "Compress-Archive" in script
     assert "AIGrader-v$Version-Windows-x64.zip" in script
     compile(spec, "AIGrader.spec", "exec")

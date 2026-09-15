@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import tempfile
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -13,14 +13,16 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from app.ai.deepseek import DeepSeekConfig, DeepSeekProvider
+from app.ai.deepseek import DeepSeekProvider
 from app.core.automation import PyAutoGuiDriver, SafeInputController
 from app.core.automation_session import AutomationSession, AutomationSettings
 from app.core.calibration_store import load_calibration
 from app.core.grading_engine import DryRunRecord, GradingEngine
+from app.core.manual_review import ManualReviewSubmitter
 from app.core.safety import RunState, SafetyController, install_hotkeys
 from app.core.screenshot import ScreenCapture
-from app.core.task_manager import load_task
+from app.core.settings import ApplicationSettings, SettingsStore, load_deepseek_config
+from app.core.task_manager import load_task, save_task
 from app.core.trial_service import TrialService
 from app.data.calibration import CalibrationProfile
 from app.data.models import Task
@@ -34,6 +36,7 @@ from .calibration_dialog import CalibrationDialog
 from .grading_panel import GradingPanel
 from .task_editor import TaskEditorDialog
 from .trial_panel import TrialPanel
+from .settings_dialog import SettingsDialog
 
 
 class GradeWorker(QObject):
@@ -46,12 +49,7 @@ class GradeWorker(QObject):
 
     def run(self) -> None:
         try:
-            provider = DeepSeekProvider(
-                DeepSeekConfig(
-                    os.environ.get("DEEPSEEK_API_KEY", ""),
-                    os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-                )
-            )
+            provider = DeepSeekProvider(load_deepseek_config())
             record = asyncio.run(GradingEngine(provider).dry_run(self.task, self.image))
         except Exception as exc:
             record = DryRunRecord(str(self.image), "", 0, None, str(exc))
@@ -61,7 +59,8 @@ class GradeWorker(QObject):
 class AutomationWorker(QObject):
     state_changed = Signal(str, str)
     result_ready = Signal(object)
-    trial_record_ready = Signal(object, str, object, object)
+    trial_record_ready = Signal(object, str, object, object, object)
+    automatic_review_ready = Signal(str, object, str, object)
     finished = Signal(object)
 
     def __init__(
@@ -92,12 +91,7 @@ class AutomationWorker(QObject):
     def run(self) -> None:
         remove_hotkeys = lambda: None
         try:
-            provider = DeepSeekProvider(
-                DeepSeekConfig(
-                    os.environ.get("DEEPSEEK_API_KEY", ""),
-                    os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-                )
-            )
+            provider = DeepSeekProvider(load_deepseek_config())
             input_controller = SafeInputController(PyAutoGuiDriver(), self.safety)
             platform = ZhixuePlatform(self.profile, ScreenCapture(), input_controller)
 
@@ -112,8 +106,9 @@ class AutomationWorker(QObject):
                 )
 
             def completed(record, image: Path) -> None:
+                log_id = None
                 if self.log_repository is not None:
-                    self.log_repository.add(self.task, record, self.mode, image)
+                    log_id = self.log_repository.add(self.task, record, self.mode, image)
                 if self.trial_service is not None and record.result is not None:
                     trial_record = self.trial_service.repository.get_record_for_sequence(
                         self.trial_service.session.session_id, record.index
@@ -121,7 +116,14 @@ class AutomationWorker(QObject):
                     self.trial_service.complete_automation(trial_record.record_id, record)
                     trial_record = self.trial_service.repository.get_record(trial_record.record_id)
                     self.trial_record_ready.emit(
-                        trial_record, str(image), record.result, self.trial_service.metrics()
+                        trial_record, str(image), record.result,
+                        self.trial_service.metrics(), record.initial_page,
+                    )
+                elif log_id and record.result is not None and record.result.need_review:
+                    row = self.log_repository.get(log_id)
+                    self.automatic_review_ready.emit(
+                        log_id, record.result, row["screenshot_path"] or str(image),
+                        record.initial_page,
                     )
 
             session = AutomationSession(
@@ -136,7 +138,12 @@ class AutomationWorker(QObject):
                 on_completed=completed,
                 capture_directory=self.capture_directory,
             )
-            remove_hotkeys = install_hotkeys(self.safety)
+            remove_hotkeys = install_hotkeys(
+                self.safety,
+                pause_hotkey=self.task.pause_hotkey,
+                resume_hotkey=self.task.resume_hotkey,
+                stop_hotkey=self.task.stop_hotkey,
+            )
             records = asyncio.run(session.run_many(self.count, start_index=self.start_index))
         except Exception as exc:
             self.safety.stop()
@@ -147,10 +154,57 @@ class AutomationWorker(QObject):
         self.finished.emit(records)
 
 
+class ManualReviewWorker(QObject):
+    finished = Signal(object)
+
+    def __init__(
+        self,
+        task: Task,
+        profile: CalibrationProfile,
+        safety: SafetyController,
+        result,
+        score: Decimal,
+        expected_page,
+    ) -> None:
+        super().__init__()
+        self.task = task
+        self.profile = profile
+        self.safety = safety
+        self.result = result
+        self.score = score
+        self.expected_page = expected_page
+
+    def run(self) -> None:
+        remove_hotkeys = lambda: None
+        try:
+            self.safety.enable()
+            platform = ZhixuePlatform(
+                self.profile,
+                ScreenCapture(),
+                SafeInputController(PyAutoGuiDriver(), self.safety),
+            )
+            remove_hotkeys = install_hotkeys(
+                self.safety,
+                pause_hotkey=self.task.pause_hotkey,
+                resume_hotkey=self.task.resume_hotkey,
+                stop_hotkey=self.task.stop_hotkey,
+            )
+            outcome = ManualReviewSubmitter(self.task, platform, self.safety).submit(
+                self.result, self.score, self.expected_page
+            )
+        except Exception as exc:
+            self.safety.stop()
+            from app.core.manual_review import ManualSubmissionResult
+            outcome = ManualSubmissionResult(False, RunState.STOPPED, str(exc))
+        finally:
+            remove_hotkeys()
+        self.finished.emit(outcome)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, task_path: Path | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("AI 阅卷助手 — Phase 6")
+        self.setWindowTitle("AI 阅卷助手 — V1.0")
         self.resize(1200, 760)
         self.task: Task | None = None
         self.task_path: Path | None = None
@@ -161,6 +215,13 @@ class MainWindow(QMainWindow):
         self.worker: GradeWorker | None = None
         self.automation_thread: QThread | None = None
         self.automation_worker: AutomationWorker | None = None
+        self.manual_thread: QThread | None = None
+        self.manual_worker: ManualReviewWorker | None = None
+        self.manual_safety: SafetyController | None = None
+        self.manual_review_identifier = ""
+        self.manual_review_mode = "trial"
+        self.manual_continue_after_success = False
+        self.review_page_snapshots: dict[str, object] = {}
         self.safety: SafetyController | None = None
         self.trial_repository: TrialRepository | None = None
         self.trial_service: TrialService | None = None
@@ -174,6 +235,7 @@ class MainWindow(QMainWindow):
         self.automatic_next_index = 1
         self.active_mode = "trial"
         self.automatic_has_run = False
+        self._loading_task = False
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -183,6 +245,7 @@ class MainWindow(QMainWindow):
         self.new_button = QPushButton("新建任务")
         self.load_button = QPushButton("打开任务")
         self.edit_button = QPushButton("编辑任务")
+        self.settings_button = QPushButton("AI 设置")
         self.edit_button.setEnabled(False)
         self.image_button = QPushButton("选择学生答案图片")
         self.grade_button = QPushButton("识别当前卷（Dry Run）")
@@ -190,10 +253,11 @@ class MainWindow(QMainWindow):
         self.new_button.clicked.connect(self.new_task)
         self.load_button.clicked.connect(self.choose_task)
         self.edit_button.clicked.connect(self.edit_task)
+        self.settings_button.clicked.connect(self.open_settings)
         self.image_button.clicked.connect(self.choose_image)
         self.grade_button.clicked.connect(self.grade)
         for widget in (
-            self.new_button, self.load_button, self.edit_button, self.image_button,
+            self.new_button, self.load_button, self.edit_button, self.settings_button, self.image_button,
             self.grade_button, self.task_label,
         ):
             toolbar.addWidget(widget)
@@ -226,6 +290,9 @@ class MainWindow(QMainWindow):
         self.unlimited_mode.toggled.connect(lambda checked: self.run_count.setEnabled(
             not checked and self.automatic_mode.isChecked() and self.automation_thread is None
         ))
+        self.run_count.valueChanged.connect(lambda _value: self._persist_runtime_preferences())
+        self.observation_delay.valueChanged.connect(lambda _value: self._persist_runtime_preferences())
+        self.unlimited_mode.toggled.connect(lambda _checked: self._persist_runtime_preferences())
         self.start_button.setEnabled(False)
         self.pause_button.setEnabled(False)
         self.resume_button.setEnabled(False)
@@ -259,6 +326,7 @@ class MainWindow(QMainWindow):
         self.trial_panel.mark_error_requested.connect(self.mark_trial_error)
         self.trial_panel.new_session_requested.connect(self.new_trial_session)
         self.trial_panel.export_requested.connect(self.export_trial_report)
+        self.trial_panel.manual_submit_requested.connect(self.manual_submit_review)
         right = QVBoxLayout()
         right.addWidget(self.panel, 3)
         right.addWidget(self.trial_panel, 2)
@@ -284,9 +352,19 @@ class MainWindow(QMainWindow):
         path = Path(value)
         if path.suffix.lower() != ".json":
             path = path.with_suffix(".json")
-        editor = TaskEditorDialog(path, parent=self)
+        try:
+            default_model = SettingsStore().load().default_model
+        except Exception:
+            default_model = ApplicationSettings().default_model
+        editor = TaskEditorDialog(path, parent=self, default_model=default_model)
         editor.task_saved.connect(self._on_task_saved)
         editor.exec()
+
+    def open_settings(self) -> None:
+        try:
+            SettingsDialog(self).exec()
+        except Exception as exc:
+            QMessageBox.critical(self, "设置无法打开", str(exc))
 
     def edit_task(self) -> None:
         if self.task is None or self.task_path is None:
@@ -305,6 +383,15 @@ class MainWindow(QMainWindow):
             self._clear_active_trial()
         self.task_path = path
         self.task = task
+        self._loading_task = True
+        self.observation_delay.setValue(task.observation_delay)
+        self.unlimited_mode.setChecked(task.max_continuous is None)
+        if task.max_continuous is not None:
+            self.run_count.setValue(task.max_continuous)
+        self.pause_button.setText(f"暂停 {task.pause_hotkey.upper()}")
+        self.resume_button.setText(f"继续 {task.resume_hotkey.upper()}")
+        self.stop_button.setText(f"紧急停止 {task.stop_hotkey.upper()}")
+        self._loading_task = False
         self.trial_panel.set_score_step(task.score_step)
         self.task_label.setText(f"任务：{task.name} 第{task.question_number}题 · 规则 v{task.rule_version}")
         self.automatic_next_index = self.run_log_repository.next_index(task.task_id)
@@ -318,13 +405,27 @@ class MainWindow(QMainWindow):
         self._refresh_automatic_eligibility()
         self._refresh_button()
 
+    def _persist_runtime_preferences(self) -> None:
+        if self._loading_task or self.task is None or self.task_path is None:
+            return
+        updated = replace(
+            self.task,
+            observation_delay=self.observation_delay.value(),
+            max_continuous=None if self.unlimited_mode.isChecked() else self.run_count.value(),
+        )
+        try:
+            save_task(updated, self.task_path)
+            self.task = updated
+        except Exception as exc:
+            QMessageBox.critical(self, "自动化设置保存失败", str(exc))
+
     def _refresh_automatic_eligibility(self) -> None:
         self.automatic_qualified = False
         if self.task is not None:
             repository = TrialRepository(
                 user_data_dir() / "trials.db", user_data_dir() / "review_screenshots"
             )
-            self.automatic_qualified = repository.latest_qualifying_session(self.task.task_id) is not None
+            self.automatic_qualified = repository.latest_qualifying_session(self.task) is not None
         if not self.automatic_qualified and self.automatic_mode.isChecked():
             self.automatic_mode.setChecked(False)
 
@@ -359,7 +460,7 @@ class MainWindow(QMainWindow):
             self._refresh_button()
 
     def _refresh_button(self) -> None:
-        idle = self.thread is None and self.automation_thread is None
+        idle = self.thread is None and self.automation_thread is None and self.manual_thread is None
         self.grade_button.setEnabled(self.task is not None and self.image is not None and idle)
         paused_for_edit = bool(self.automation_thread is not None and self.safety and self.safety.paused)
         self.edit_button.setEnabled(
@@ -374,6 +475,7 @@ class MainWindow(QMainWindow):
         self.new_button.setEnabled(idle)
         self.load_button.setEnabled(idle)
         self.image_button.setEnabled(idle)
+        self.settings_button.setEnabled(idle)
         self.run_count.setEnabled(
             idle and self.automatic_mode.isChecked() and not self.unlimited_mode.isChecked()
         )
@@ -440,6 +542,9 @@ class MainWindow(QMainWindow):
         self._refresh_button()
 
     def start_automation(self) -> None:
+        self._start_automation(skip_confirmation=False)
+
+    def _start_automation(self, *, skip_confirmation: bool) -> None:
         if self.task is None or self.calibration is None:
             return
         start_index = 1
@@ -468,15 +573,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "模式未启用", "请使用试改模式，或在试改达标后显式启用自动模式。")
             return
         count_text = "不设上限" if count is None else f"最多 {count} 份"
-        answer = QMessageBox.warning(
-            self,
-            "确认真实提交",
-            f"将连续处理{count_text}并真实填写、提交分数。请保持浏览器布局不变。是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
+        if not skip_confirmation:
+            answer = QMessageBox.warning(
+                self,
+                "确认真实提交",
+                f"将连续处理{count_text}并真实填写、提交分数。请保持浏览器布局不变。是否继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self.safety = SafetyController()
         self.safety.enable()
         self.automation_thread = QThread(self)
@@ -497,6 +603,7 @@ class MainWindow(QMainWindow):
         self.automation_worker.state_changed.connect(self.on_automation_state)
         self.automation_worker.result_ready.connect(self.panel.show_result)
         self.automation_worker.trial_record_ready.connect(self.on_trial_record)
+        self.automation_worker.automatic_review_ready.connect(self.on_automatic_review)
         self.automation_worker.finished.connect(self.on_automation_finished)
         self.automation_worker.finished.connect(self.automation_thread.quit)
         self.automation_thread.finished.connect(self.automation_worker.deleteLater)
@@ -509,8 +616,9 @@ class MainWindow(QMainWindow):
         self.automation_thread.start()
 
     def pause_automation(self) -> None:
-        if self.safety:
-            self.safety.pause()
+        active_safety = self.safety or self.manual_safety
+        if active_safety:
+            active_safety.pause()
             self.pause_button.setEnabled(False)
             self.resume_button.setEnabled(True)
 
@@ -528,15 +636,17 @@ class MainWindow(QMainWindow):
             self.resume_button.setEnabled(False)
 
     def resume_automation(self) -> None:
-        if self.safety:
-            self.safety.resume()
-            resumed = not self.safety.paused
+        active_safety = self.safety or self.manual_safety
+        if active_safety:
+            active_safety.resume()
+            resumed = not active_safety.paused
             self.pause_button.setEnabled(resumed)
-            self.resume_button.setEnabled(not resumed and not self.safety.pause_locked)
+            self.resume_button.setEnabled(not resumed and not active_safety.pause_locked)
 
     def stop_automation(self) -> None:
-        if self.safety:
-            self.safety.stop()
+        active_safety = self.safety or self.manual_safety
+        if active_safety:
+            active_safety.stop()
             self.pause_button.setEnabled(False)
             self.resume_button.setEnabled(False)
             self.stop_button.setEnabled(False)
@@ -598,6 +708,7 @@ class MainWindow(QMainWindow):
             self.trial_temp.cleanup()
         self.trial_temp = tempfile.TemporaryDirectory(prefix="aigrader-trial-")
         self.trial_screenshots.clear()
+        self.review_page_snapshots.clear()
         self.trial_panel.clear_current()
         self.trial_panel.show_metrics(self.trial_service.metrics())
 
@@ -621,6 +732,7 @@ class MainWindow(QMainWindow):
             self.trial_temp.cleanup()
             self.trial_temp = None
         self.trial_screenshots.clear()
+        self.review_page_snapshots.clear()
         self.trial_panel.clear_current()
         self.trial_panel.metrics.setText("尚未开始试改")
 
@@ -642,18 +754,149 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "导出失败", str(exc))
 
-    def on_trial_record(self, record: TrialRecord, screenshot: str, result, metrics) -> None:
+    def on_trial_record(
+        self, record: TrialRecord, screenshot: str, result, metrics, initial_page
+    ) -> None:
         self.trial_screenshots[record.record_id] = Path(screenshot)
+        if initial_page is not None:
+            self.review_page_snapshots[record.record_id] = initial_page
         self.trial_panel.set_current(record, result)
         self.trial_panel.show_metrics(metrics)
         self._refresh_automatic_eligibility()
 
-    def mark_trial_correct(self, record_id: str, correct_score: Decimal) -> None:
-        if self.trial_service is None:
+    def on_automatic_review(self, log_id: str, result, screenshot: str, initial_page) -> None:
+        self.trial_screenshots[log_id] = Path(screenshot)
+        if initial_page is not None:
+            self.review_page_snapshots[log_id] = initial_page
+        self.trial_panel.set_automatic_review(log_id, result)
+
+    def manual_submit_review(
+        self,
+        identifier: str,
+        correct_score: Decimal,
+        category: ErrorCategory,
+        note: str,
+    ) -> None:
+        if self.task is None or self.calibration is None or self.trial_panel.result is None:
+            self.cancel_trial_review()
             return
+        if self.automation_thread is not None:
+            self.cancel_trial_review()
+            QMessageBox.information(self, "请稍候", "自动化线程正在结束，请稍后再次点击人工提交。")
+            return
+        mode = self.trial_panel.mode
+        result = self.trial_panel.result
+        screenshot = self.trial_screenshots.get(identifier)
+        expected_page = self.review_page_snapshots.get(identifier)
         try:
-            self.trial_service.mark_ai_correct(record_id, correct_score)
-            self.trial_panel.show_metrics(self.trial_service.metrics())
+            if expected_page is None:
+                raise RuntimeError("当前答案的页面安全签名不可用，请停止后重新识别本份")
+            if mode == "trial":
+                if self.trial_service is None:
+                    raise RuntimeError("当前试改会话不存在")
+                if correct_score == result.total_score:
+                    self.trial_service.mark_ai_correct(identifier, correct_score)
+                else:
+                    if screenshot is None:
+                        raise FileNotFoundError("复核截图不可用")
+                    self.trial_service.mark_ai_error(
+                        identifier, screenshot, correct_score, category, note
+                    )
+            else:
+                self.run_log_repository.mark_review(
+                    identifier,
+                    correct_score=str(correct_score),
+                    ai_correct=correct_score == result.total_score,
+                    error_category=None if correct_score == result.total_score else category.value,
+                    note=note,
+                )
+        except Exception as exc:
+            self.cancel_trial_review()
+            QMessageBox.critical(self, "复核记录失败", str(exc))
+            return
+
+        self.manual_review_identifier = identifier
+        self.manual_review_mode = mode
+        self.manual_continue_after_success = True
+        self.manual_safety = SafetyController()
+        self.manual_thread = QThread(self)
+        self.manual_worker = ManualReviewWorker(
+            self.task, self.calibration, self.manual_safety, result, correct_score,
+            expected_page,
+        )
+        self.manual_worker.moveToThread(self.manual_thread)
+        self.manual_thread.started.connect(self.manual_worker.run)
+        self.manual_worker.finished.connect(self.on_manual_submission_finished)
+        self.manual_worker.finished.connect(self.manual_thread.quit)
+        self.manual_thread.finished.connect(self.manual_worker.deleteLater)
+        self.manual_thread.finished.connect(self._manual_thread_finished)
+        self.trial_panel.set_running(True)
+        self.trial_panel.set_review_busy(True)
+        self.pause_button.setEnabled(True)
+        self.stop_button.setEnabled(True)
+        self._refresh_button()
+        self.manual_thread.start()
+
+    def on_manual_submission_finished(self, outcome) -> None:
+        try:
+            if self.manual_review_mode == "trial" and self.trial_service is not None:
+                self.trial_service.repository.update_automation(
+                    self.manual_review_identifier,
+                    submitted=outcome.submitted,
+                    automation_state=outcome.state.value,
+                )
+                self.trial_panel.show_metrics(self.trial_service.metrics())
+            elif self.manual_review_mode == "automatic":
+                self.run_log_repository.update_manual_submission(
+                    self.manual_review_identifier,
+                    submitted=outcome.submitted,
+                    state=outcome.state.value,
+                    error=outcome.error,
+                )
+                if outcome.submitted:
+                    row = self.run_log_repository.get(self.manual_review_identifier)
+                    self.automatic_next_index = int(row["paper_index"]) + 1
+        except Exception as exc:
+            outcome = replace(outcome, submitted=False, error=f"日志更新失败：{exc}")
+        if outcome.submitted:
+            self.trial_panel.clear_current()
+            self.panel.status.setText("状态：人工复核已提交，准备继续")
+        else:
+            self.manual_continue_after_success = False
+            if outcome.submit_clicked:
+                self.trial_panel.clear_current()
+            else:
+                self.trial_panel.set_review_busy(False)
+            QMessageBox.critical(self, "人工提交未完成", outcome.error or "未知错误")
+
+    def _manual_thread_finished(self) -> None:
+        if self.manual_thread:
+            self.manual_thread.deleteLater()
+        should_continue = self.manual_continue_after_success
+        self.manual_thread = None
+        self.manual_worker = None
+        self.manual_safety = None
+        self.pause_button.setEnabled(False)
+        self.resume_button.setEnabled(False)
+        self.stop_button.setEnabled(False)
+        self.manual_continue_after_success = False
+        self.trial_panel.set_running(False)
+        self._refresh_automatic_eligibility()
+        self._refresh_button()
+        if should_continue:
+            self._start_automation(skip_confirmation=True)
+
+    def mark_trial_correct(self, record_id: str, correct_score: Decimal) -> None:
+        try:
+            if self.trial_panel.mode == "automatic":
+                self.run_log_repository.mark_review(
+                    record_id, correct_score=str(correct_score), ai_correct=True
+                )
+            elif self.trial_service is not None:
+                self.trial_service.mark_ai_correct(record_id, correct_score)
+                self.trial_panel.show_metrics(self.trial_service.metrics())
+            else:
+                return
             self.trial_panel.clear_current()
             self._refresh_automatic_eligibility()
         except Exception as exc:
@@ -666,16 +909,25 @@ class MainWindow(QMainWindow):
         category: ErrorCategory,
         note: str,
     ) -> None:
-        if self.trial_service is None:
-            return
         screenshot = self.trial_screenshots.get(record_id)
         if screenshot is None:
             self.cancel_trial_review()
             QMessageBox.critical(self, "记录失败", "当前答案截图已不可用")
             return
         try:
-            self.trial_service.mark_ai_error(record_id, screenshot, correct_score, category, note)
-            self.trial_panel.show_metrics(self.trial_service.metrics())
+            if self.trial_panel.mode == "automatic":
+                self.run_log_repository.mark_review(
+                    record_id,
+                    correct_score=str(correct_score),
+                    ai_correct=False,
+                    error_category=category.value,
+                    note=note,
+                )
+            elif self.trial_service is not None:
+                self.trial_service.mark_ai_error(record_id, screenshot, correct_score, category, note)
+                self.trial_panel.show_metrics(self.trial_service.metrics())
+            else:
+                return
             self.trial_panel.clear_current()
             self._refresh_automatic_eligibility()
             self.stop_automation()
@@ -684,9 +936,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "记录失败", str(exc))
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self.thread is not None or self.automation_thread is not None:
+        if self.thread is not None or self.automation_thread is not None or self.manual_thread is not None:
             if self.safety:
                 self.safety.stop()
+            if self.manual_safety:
+                self.manual_safety.stop()
             QMessageBox.information(self, "正在安全停止", "后台操作尚未结束。已请求停止，请等待当前网络或截图操作返回后再关闭。")
             event.ignore()
             return

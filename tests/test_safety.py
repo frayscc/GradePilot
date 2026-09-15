@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import sys
+from types import SimpleNamespace
 
 import pytest
 
 from app.ai.schemas import GradeResult
 from app.core.automation import SafeInputController
-from app.core.safety import AutomationBlocked, SafetyController, SubmissionPermit
+from app.core.safety import AutomationBlocked, SafetyController, SubmissionPermit, install_hotkeys
 from app.data.calibration import Point
 
 
@@ -76,3 +78,23 @@ def test_locked_review_pause_cannot_be_bypassed_by_resume() -> None:
     safety.unlock_pause()
     safety.resume()
     assert not safety.paused
+
+
+def test_custom_windows_hotkeys_are_registered(monkeypatch) -> None:
+    registered = []
+    removed = []
+    fake_keyboard = SimpleNamespace(
+        add_hotkey=lambda key, callback: registered.append((key, callback)) or key,
+        remove_hotkey=lambda handle: removed.append(handle),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "keyboard", fake_keyboard)
+    remove = install_hotkeys(
+        SafetyController(),
+        pause_hotkey="ctrl+f8",
+        resume_hotkey="ctrl+f9",
+        stop_hotkey="ctrl+shift+q",
+    )
+    assert [item[0] for item in registered] == ["ctrl+f8", "ctrl+f9", "ctrl+shift+q"]
+    remove()
+    assert removed == ["ctrl+f8", "ctrl+f9", "ctrl+shift+q"]

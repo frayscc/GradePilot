@@ -83,6 +83,7 @@ def test_successful_run_is_strictly_serial_and_submits() -> None:
     )
     record = asyncio.run(session.run_one(1))
     assert record.submitted is True
+    assert record.initial_page == platform.snapshot
     assert platform.actions == ["snapshot", "capture", "assert_same", "enter", "snapshot", "submit", "wait_next"]
 
 

@@ -57,7 +57,7 @@ class ZhixuePlatform(GradingPlatform):
             raise PageTransitionError("AI 处理期间学生答案区域已变化，禁止把旧结果填入新页面")
 
     def enter_score(self, permit: SubmissionPermit) -> None:
-        self.input.enter_score(self.profile.score_input, permit.result.total_score, permit)
+        self.input.enter_score(self.profile.score_input, permit.score, permit)
 
     def submit(self, permit: SubmissionPermit) -> None:
         self.input.submit(self.profile.submit_button, permit)

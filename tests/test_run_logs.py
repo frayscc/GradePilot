@@ -53,3 +53,25 @@ def test_exception_log_archives_screenshot(tmp_path: Path) -> None:
     assert row["submitted"] == 0
     assert row["state"] == RunState.API_ERROR.value
     assert Path(row["screenshot_path"]).read_bytes() == b"student"
+
+
+def test_manual_review_updates_log_and_submission(tmp_path: Path) -> None:
+    repository = RunLogRepository(tmp_path / "logs.db", tmp_path / "exceptions")
+    screenshot = tmp_path / "answer.png"
+    screenshot.write_bytes(b"student")
+    record = replace(make_record(RunState.NEED_REVIEW), result=replace(
+        parsed_result(), need_review=True, review_reason="字迹不清"
+    ))
+    log_id = repository.add(make_task(), record, "automatic", screenshot)
+    repository.mark_review(
+        log_id, correct_score="1", ai_correct=False,
+        error_category="recognition_error", note="人工确认",
+    )
+    repository.update_manual_submission(
+        log_id, submitted=True, state=RunState.WAIT_NEXT.value, error=None
+    )
+    row = repository.get(log_id)
+    assert row["review_outcome"] == "ai_error"
+    assert row["correct_score"] == "1"
+    assert row["manual_submitted"] == 1
+    assert row["submitted"] == 1

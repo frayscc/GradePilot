@@ -3,28 +3,23 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from app.ai.deepseek import DeepSeekConfig, DeepSeekProvider
+from app.ai.deepseek import DeepSeekProvider
 from app.core.grading_engine import GradingEngine, list_images
 from app.core.task_manager import load_task
+from app.core.settings import load_deepseek_config
 
 
-def provider_from_env() -> DeepSeekProvider:
-    return DeepSeekProvider(
-        DeepSeekConfig(
-            os.environ.get("DEEPSEEK_API_KEY", ""),
-            os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        )
-    )
+def provider_from_settings() -> DeepSeekProvider:
+    return DeepSeekProvider(load_deepseek_config())
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="AIGrader Phase 5")
+    root = argparse.ArgumentParser(description="AIGrader V1")
     sub = root.add_subparsers(dest="command", required=True)
     ui = sub.add_parser("ui", help="启动 AI 评分结果界面")
     ui.add_argument("--task", type=Path)
@@ -41,7 +36,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 async def run_dry(task_path: Path, image: Path, output: Path | None) -> int:
-    record = await GradingEngine(provider_from_env()).dry_run(load_task(task_path), image)
+    record = await GradingEngine(provider_from_settings()).dry_run(load_task(task_path), image)
     text = json.dumps(record.as_dict(), ensure_ascii=False, indent=2)
     print(text)
     if output:
@@ -54,7 +49,7 @@ async def run_batch(task_path: Path, image_dir: Path, output: Path, minimum: int
     images = list_images(image_dir)
     if len(images) < minimum:
         raise SystemExit(f"验收图片不足：找到 {len(images)} 张，至少需要 {minimum} 张")
-    records = await GradingEngine(provider_from_env()).batch_dry_run(load_task(task_path), images)
+    records = await GradingEngine(provider_from_settings()).batch_dry_run(load_task(task_path), images)
     report = {
         "task": str(task_path),
         "count": len(records),

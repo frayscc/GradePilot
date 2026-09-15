@@ -25,6 +25,8 @@ class TrialSession:
     target_count: int
     error_threshold_percent: Decimal
     started_at: str
+    rule_version: int = 1
+    grading_fingerprint: str = ""
 
 
 @dataclass(frozen=True)

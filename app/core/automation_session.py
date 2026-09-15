@@ -12,7 +12,7 @@ from pathlib import Path
 from app.ai.base import AIProvider, ProviderError
 from app.ai.schemas import GradeRequest, GradeResult, ResultValidationError
 from app.data.models import Task
-from app.platforms.base import GradingPlatform, PageTransitionError
+from app.platforms.base import GradingPlatform, PageSnapshot, PageTransitionError
 
 from .safety import AutomationBlocked, RunState, SafetyController, SubmissionPermit
 
@@ -40,6 +40,7 @@ class AutomationRunResult:
     api_success: bool = False
     score_entered: bool = False
     submit_clicked: bool = False
+    initial_page: PageSnapshot | None = None
 
 
 class AutomationSession:
@@ -123,6 +124,7 @@ class AutomationSession:
         result: GradeResult | None = None
         submission_clicked = False
         score_entered = False
+        initial_page: PageSnapshot | None = None
         started_at = datetime.now(timezone.utc).isoformat()
         self.last_latency_ms = None
 
@@ -135,6 +137,7 @@ class AutomationSession:
                 api_success=result is not None,
                 score_entered=score_entered,
                 submit_clicked=submission_clicked,
+                initial_page=initial_page,
             )
 
         try:

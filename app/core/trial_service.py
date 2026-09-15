@@ -86,6 +86,8 @@ class TrialService:
         return {
             "session_id": self.session.session_id,
             "task_id": self.session.task_id,
+            "rule_version": self.session.rule_version,
+            "grading_fingerprint": self.session.grading_fingerprint,
             "started_at": self.session.started_at,
             "target_count": metrics.target_count,
             "processed": metrics.processed,

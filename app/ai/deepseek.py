@@ -74,3 +74,24 @@ class DeepSeekProvider(AIProvider):
         finally:
             if owns_client:
                 await client.aclose()
+
+    async def test_connection(self, model: str) -> str:
+        owns_client = self.client is None
+        client = self.client or httpx.AsyncClient(timeout=min(self.config.timeout_seconds, 15.0))
+        try:
+            response = await client.get(
+                f"{self.config.base_url.rstrip('/')}/models",
+                headers={"Authorization": f"Bearer {self.config.api_key}"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            models = {
+                item.get("id") for item in payload.get("data", [])
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+            return f"连接成功；模型 {model} {'可用' if model in models else '未在列表中，仍可保存'}"
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+            raise ProviderError(f"DeepSeek 连接测试失败：{exc}") from exc
+        finally:
+            if owns_client:
+                await client.aclose()

@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -105,6 +106,10 @@ def test_one_hundred_paper_trial_report(tmp_path: Path) -> None:
                 categories[(sequence - 86) % len(categories)],
                 "100 份模拟验收",
             )
+        if needs_review:
+            repository.update_automation(
+                record.record_id, submitted=True, automation_state="WAIT_NEXT"
+            )
 
     metrics = service.metrics()
     assert metrics.processed == 100
@@ -127,13 +132,40 @@ def test_one_hundred_paper_trial_report(tmp_path: Path) -> None:
     assert report["meets_automatic_mode_reference"] is True
     assert report["automatic_mode_enabled"] is False
     assert sum(report["error_categories"].values()) == 15
-    qualified = repository.latest_qualifying_session(make_task().task_id)
+    qualified = repository.latest_qualifying_session(make_task())
     assert qualified is not None
     assert qualified.session_id == service.session.session_id
+    assert repository.latest_qualifying_session(replace(make_task(), rule_version=2)) is None
+    changed_rubric = replace(
+        make_task(), rubric=replace(make_task().rubric, supplemental_rules="规则已变化")
+    )
+    assert repository.latest_qualifying_session(changed_rubric) is None
 
 
 def test_unresolved_review_cannot_unlock_automatic_mode(tmp_path: Path) -> None:
     repository, service = setup_trial(tmp_path, target=1, threshold="100")
     add_record(service, tmp_path, 1, review=True)
     assert service.metrics().meets_reference_condition
-    assert repository.latest_qualifying_session(make_task().task_id) is None
+    assert repository.latest_qualifying_session(make_task()) is None
+
+
+def test_existing_phase4_database_is_migrated_without_unlocking_old_trial(tmp_path: Path) -> None:
+    database = tmp_path / "trials.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TABLE trial_sessions (
+                session_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, target_count INTEGER NOT NULL,
+                error_threshold_percent TEXT NOT NULL, started_at TEXT NOT NULL
+            )"""
+        )
+        connection.execute(
+            "INSERT INTO trial_sessions VALUES ('old', 'task-16', 100, '5', '2026-01-01')"
+        )
+    repository = TrialRepository(database, tmp_path / "archive")
+    with repository.connect() as connection:
+        row = connection.execute(
+            "SELECT rule_version, grading_fingerprint FROM trial_sessions WHERE session_id = 'old'"
+        ).fetchone()
+    assert row["rule_version"] == 1
+    assert row["grading_fingerprint"] == ""
+    assert repository.latest_qualifying_session(make_task()) is None

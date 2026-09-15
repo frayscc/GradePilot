@@ -7,6 +7,13 @@
   "provider": "deepseek",
   "model": "deepseek-flash",
   "rule_version": 1,
+  "automation": {
+    "observation_delay": 1.0,
+    "max_continuous": 100,
+    "pause_hotkey": "f8",
+    "resume_hotkey": "f9",
+    "stop_hotkey": "ctrl+alt+q"
+  },
   "question": {
     "text": "请在正式测试前替换为完整题目文字。",
     "image_path": null

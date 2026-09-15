@@ -93,6 +93,11 @@ class Task:
     rule_version: int
     question: Question
     rubric: Rubric
+    observation_delay: float = 1.0
+    max_continuous: int | None = 100
+    pause_hotkey: str = "f8"
+    resume_hotkey: str = "f9"
+    stop_hotkey: str = "ctrl+alt+q"
 
     def __post_init__(self) -> None:
         if not self.task_id.strip() or not self.name.strip() or not self.question_number.strip():
@@ -107,6 +112,13 @@ class Task:
             raise TaskValidationError("model 不能为空")
         if self.rule_version < 1:
             raise TaskValidationError("rule_version 必须从 1 开始")
+        if not 0 <= self.observation_delay <= 5:
+            raise TaskValidationError("提交前观察时间必须在 0～5 秒之间")
+        if self.max_continuous is not None and self.max_continuous < 1:
+            raise TaskValidationError("最大连续阅卷数必须大于 0 或设为无限制")
+        hotkeys = [self.pause_hotkey.strip(), self.resume_hotkey.strip(), self.stop_hotkey.strip()]
+        if any(not value for value in hotkeys) or len(set(value.lower() for value in hotkeys)) != 3:
+            raise TaskValidationError("暂停、继续和停止快捷键必须非空且互不相同")
         rubric_max = sum((item.max_score for item in self.rubric.items), Decimal("0"))
         if rubric_max != self.max_score:
             raise TaskValidationError(f"各评分项满分合计 {rubric_max} 与整题满分 {self.max_score} 不一致")
@@ -133,6 +145,13 @@ class Task:
             "provider": self.provider,
             "model": self.model,
             "rule_version": self.rule_version,
+            "automation": {
+                "observation_delay": self.observation_delay,
+                "max_continuous": self.max_continuous,
+                "pause_hotkey": self.pause_hotkey,
+                "resume_hotkey": self.resume_hotkey,
+                "stop_hotkey": self.stop_hotkey,
+            },
             "question": {"text": self.question.text, "image_path": image_path},
             "rubric": {
                 "items": [
@@ -158,14 +177,35 @@ class Task:
     def from_dict(cls, payload: Any, *, base_dir: Path) -> "Task":
         if not isinstance(payload, dict):
             raise TaskValidationError("任务必须是 JSON 对象")
-        require_exact_keys(
-            payload,
-            {
-                "task_id", "name", "question_number", "max_score", "score_step",
-                "provider", "model", "rule_version", "question", "rubric",
-            },
-            "task",
-        )
+        base_keys = {
+            "task_id", "name", "question_number", "max_score", "score_step",
+            "provider", "model", "rule_version", "question", "rubric",
+        }
+        if set(payload) not in (base_keys, base_keys | {"automation"}):
+            require_exact_keys(payload, base_keys | {"automation"}, "task")
+        automation = payload.get("automation", {})
+        if not isinstance(automation, dict):
+            raise TaskValidationError("automation 必须是对象")
+        automation_defaults = {
+            "observation_delay": 1.0,
+            "max_continuous": 100,
+            "pause_hotkey": "f8",
+            "resume_hotkey": "f9",
+            "stop_hotkey": "ctrl+alt+q",
+        }
+        if automation:
+            require_exact_keys(automation, set(automation_defaults), "automation")
+            automation_defaults.update(automation)
+        if isinstance(automation_defaults["observation_delay"], bool) or not isinstance(
+            automation_defaults["observation_delay"], (int, float)
+        ):
+            raise TaskValidationError("automation.observation_delay 必须是数字")
+        maximum = automation_defaults["max_continuous"]
+        if maximum is not None and (type(maximum) is not int):
+            raise TaskValidationError("automation.max_continuous 必须是整数或 null")
+        for key in ("pause_hotkey", "resume_hotkey", "stop_hotkey"):
+            if not isinstance(automation_defaults[key], str):
+                raise TaskValidationError(f"automation.{key} 必须是字符串")
         question_raw = payload["question"]
         if not isinstance(question_raw, dict):
             raise TaskValidationError("question 必须是对象")
@@ -231,4 +271,9 @@ class Task:
             rule_version=payload["rule_version"],
             question=question,
             rubric=Rubric(tuple(items), rubric_raw["supplemental_rules"]),
+            observation_delay=float(automation_defaults["observation_delay"]),
+            max_continuous=maximum,
+            pause_hotkey=automation_defaults["pause_hotkey"],
+            resume_hotkey=automation_defaults["resume_hotkey"],
+            stop_hotkey=automation_defaults["stop_hotkey"],
         )

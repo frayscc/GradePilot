@@ -4,6 +4,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from decimal import Decimal
 
 from app.ai.schemas import GradeResult
 
@@ -35,6 +36,12 @@ class SubmissionPermit:
     result: GradeResult
     ai_success: bool = True
     score_valid: bool = True
+    manual_review_authorized: bool = False
+    override_score: Decimal | None = None
+
+    @property
+    def score(self) -> Decimal:
+        return self.override_score if self.override_score is not None else self.result.total_score
 
 
 class SafetyController:
@@ -94,11 +101,17 @@ class SafetyController:
             raise AutomationBlocked("自动化已暂停")
         if not permit.ai_success or not permit.score_valid:
             raise AutomationBlocked("AI 或分数验证状态无效")
-        if permit.result.need_review:
+        if permit.result.need_review and not permit.manual_review_authorized:
             raise AutomationBlocked("AI 要求人工复核")
 
 
-def install_hotkeys(safety: SafetyController) -> Callable[[], None]:
+def install_hotkeys(
+    safety: SafetyController,
+    *,
+    pause_hotkey: str = "f8",
+    resume_hotkey: str = "f9",
+    stop_hotkey: str = "ctrl+alt+q",
+) -> Callable[[], None]:
     import sys
 
     if sys.platform != "win32":
@@ -106,9 +119,9 @@ def install_hotkeys(safety: SafetyController) -> Callable[[], None]:
     import keyboard
 
     handles = [
-        keyboard.add_hotkey("f8", safety.pause),
-        keyboard.add_hotkey("f9", safety.resume),
-        keyboard.add_hotkey("ctrl+alt+q", safety.stop),
+        keyboard.add_hotkey(pause_hotkey, safety.pause),
+        keyboard.add_hotkey(resume_hotkey, safety.resume),
+        keyboard.add_hotkey(stop_hotkey, safety.stop),
     ]
 
     def remove() -> None:

@@ -64,6 +64,7 @@ class TrialPanel(QGroupBox):
     mark_error_requested = Signal(str, object, object, str)
     new_session_requested = Signal()
     export_requested = Signal()
+    manual_submit_requested = Signal(str, object, object, str)
 
     def __init__(self) -> None:
         super().__init__("试改模式")
@@ -89,12 +90,16 @@ class TrialPanel(QGroupBox):
         self.error_button = QPushButton("标记 AI 错判")
         self.new_button = QPushButton("新建试改会话")
         self.export_button = QPushButton("导出报告")
+        self.manual_button = QPushButton("人工提交并继续")
         self.correct_button.setEnabled(False)
         self.error_button.setEnabled(False)
+        self.manual_button.setEnabled(False)
         self.correct_button.clicked.connect(self.mark_correct)
         self.error_button.clicked.connect(self.mark_error)
         self.new_button.clicked.connect(lambda: self.new_session_requested.emit())
         self.export_button.clicked.connect(lambda: self.export_requested.emit())
+        self.manual_button.clicked.connect(self.manual_submit)
+        actions.addWidget(self.manual_button)
         actions.addWidget(self.correct_button)
         actions.addWidget(self.error_button)
         actions.addWidget(self.new_button)
@@ -103,6 +108,8 @@ class TrialPanel(QGroupBox):
         self.record: TrialRecord | None = None
         self.result: GradeResult | None = None
         self.score_step = Decimal("1")
+        self.identifier = ""
+        self.mode = "trial"
 
     def set_score_step(self, score_step: Decimal) -> None:
         self.score_step = score_step
@@ -110,14 +117,38 @@ class TrialPanel(QGroupBox):
     def set_current(self, record: TrialRecord, result: GradeResult) -> None:
         self.record = record
         self.result = result
+        self.identifier = record.record_id
+        self.mode = "trial"
         self.correct_button.setEnabled(record.need_review)
         self.error_button.setEnabled(True)
+        self.manual_button.setEnabled(record.need_review)
+
+    def set_automatic_review(self, log_id: str, result: GradeResult) -> None:
+        self.record = None
+        self.result = result
+        self.identifier = log_id
+        self.mode = "automatic"
+        self.correct_button.setEnabled(False)
+        self.error_button.setEnabled(False)
+        self.manual_button.setEnabled(True)
+
+    def set_review_busy(self, busy: bool) -> None:
+        if busy:
+            self.correct_button.setEnabled(False)
+            self.error_button.setEnabled(False)
+            self.manual_button.setEnabled(False)
+        elif self.result is not None and self.identifier:
+            self.correct_button.setEnabled(self.mode == "trial" and bool(self.record and self.record.need_review))
+            self.error_button.setEnabled(self.mode == "trial")
+            self.manual_button.setEnabled(bool(self.result.need_review))
 
     def clear_current(self) -> None:
         self.record = None
         self.result = None
+        self.identifier = ""
         self.correct_button.setEnabled(False)
         self.error_button.setEnabled(False)
+        self.manual_button.setEnabled(False)
 
     def set_running(self, running: bool) -> None:
         self.target.setEnabled(not running)
@@ -136,12 +167,12 @@ class TrialPanel(QGroupBox):
         )
 
     def mark_correct(self) -> None:
-        if self.record is None or self.result is None:
+        if not self.identifier or self.result is None:
             return
-        self.mark_correct_requested.emit(self.record.record_id, self.result.total_score)
+        self.mark_correct_requested.emit(self.identifier, self.result.total_score)
 
     def mark_error(self) -> None:
-        if self.record is None or self.result is None:
+        if not self.identifier or self.result is None:
             return
         self.review_started.emit()
         dialog = ErrorReviewDialog(self.result, self.score_step, self)
@@ -149,7 +180,23 @@ class TrialPanel(QGroupBox):
             self.review_cancelled.emit()
             return
         self.mark_error_requested.emit(
-            self.record.record_id,
+            self.identifier,
+            Decimal(str(dialog.correct_score.value())),
+            dialog.category.currentData(),
+            dialog.note.toPlainText().strip(),
+        )
+
+    def manual_submit(self) -> None:
+        if not self.identifier or self.result is None:
+            return
+        self.review_started.emit()
+        dialog = ErrorReviewDialog(self.result, self.score_step, self)
+        dialog.setWindowTitle("人工给分并提交")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.review_cancelled.emit()
+            return
+        self.manual_submit_requested.emit(
+            self.identifier,
             Decimal(str(dialog.correct_score.value())),
             dialog.category.currentData(),
             dialog.note.toPlainText().strip(),

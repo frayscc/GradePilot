@@ -29,6 +29,16 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
     assert list(path.parent.glob("*.tmp")) == []
 
 
+def test_runtime_preferences_round_trip(tmp_path: Path) -> None:
+    task = replace(
+        make_task(), observation_delay=2.5, max_continuous=None,
+        pause_hotkey="ctrl+f8", resume_hotkey="ctrl+f9", stop_hotkey="ctrl+shift+q",
+    )
+    path = tmp_path / "task.json"
+    save_task(task, path)
+    assert load_task(path) == task
+
+
 def test_question_image_inside_task_directory_is_saved_relative(tmp_path: Path) -> None:
     image = tmp_path / "question.png"
     image.write_bytes(b"png")

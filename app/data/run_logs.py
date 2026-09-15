@@ -41,9 +41,27 @@ class RunLogRepository:
                     error TEXT,
                     rule_version INTEGER NOT NULL,
                     task_snapshot TEXT NOT NULL,
-                    screenshot_path TEXT
+                    screenshot_path TEXT,
+                    review_outcome TEXT NOT NULL DEFAULT 'unreviewed',
+                    correct_score TEXT,
+                    error_category TEXT,
+                    note TEXT NOT NULL DEFAULT '',
+                    manual_submitted INTEGER NOT NULL DEFAULT 0 CHECK(manual_submitted IN (0, 1))
                 )"""
             )
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(grading_logs)").fetchall()
+            }
+            migrations = {
+                "review_outcome": "TEXT NOT NULL DEFAULT 'unreviewed'",
+                "correct_score": "TEXT",
+                "error_category": "TEXT",
+                "note": "TEXT NOT NULL DEFAULT ''",
+                "manual_submitted": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for name, definition in migrations.items():
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE grading_logs ADD COLUMN {name} {definition}")
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=10)
@@ -66,9 +84,12 @@ class RunLogRepository:
         try:
             with self.connect() as connection:
                 connection.execute(
-                    """INSERT INTO grading_logs VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                    )""",
+                    """INSERT INTO grading_logs (
+                        log_id, mode, task_id, paper_index, started_at, completed_at,
+                        provider, model, latency_ms, result_json, need_review, api_success,
+                        score_entered, submit_clicked, submitted, state, error, rule_version,
+                        task_snapshot, screenshot_path
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         log_id, mode, task.task_id, record.index, record.started_at,
                         record.completed_at, task.provider, task.model, record.latency_ms,
@@ -83,6 +104,46 @@ class RunLogRepository:
                 Path(screenshot_path).unlink(missing_ok=True)
             raise
         return log_id
+
+    def mark_review(
+        self,
+        log_id: str,
+        *,
+        correct_score: str,
+        ai_correct: bool,
+        error_category: str | None = None,
+        note: str = "",
+    ) -> None:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """UPDATE grading_logs SET review_outcome = ?, correct_score = ?,
+                error_category = ?, note = ? WHERE log_id = ?""",
+                (
+                    "ai_correct" if ai_correct else "ai_error", correct_score,
+                    error_category, note.strip(), log_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"自动阅卷日志不存在：{log_id}")
+
+    def update_manual_submission(self, log_id: str, *, submitted: bool, state: str, error: str | None) -> None:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """UPDATE grading_logs SET manual_submitted = ?, submitted = ?, state = ?, error = ?
+                WHERE log_id = ?""",
+                (int(submitted), int(submitted), state, error, log_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"自动阅卷日志不存在：{log_id}")
+
+    def get(self, log_id: str) -> sqlite3.Row:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM grading_logs WHERE log_id = ?", (log_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"自动阅卷日志不存在：{log_id}")
+        return row
 
     def records(self, task_id: str, *, mode: str | None = None) -> list[sqlite3.Row]:
         query = "SELECT * FROM grading_logs WHERE task_id = ?"
