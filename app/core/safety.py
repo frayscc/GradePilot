@@ -41,6 +41,7 @@ class SafetyController:
     def __init__(self) -> None:
         self._enabled = threading.Event()
         self._paused = threading.Event()
+        self._pause_locked = threading.Event()
         self._stopped = threading.Event()
 
     def enable(self) -> None:
@@ -51,13 +52,21 @@ class SafetyController:
     def pause(self) -> None:
         self._paused.set()
 
+    def lock_pause(self) -> None:
+        self._paused.set()
+        self._pause_locked.set()
+
+    def unlock_pause(self) -> None:
+        self._pause_locked.clear()
+
     def resume(self) -> None:
-        if not self._stopped.is_set():
+        if not self._stopped.is_set() and not self._pause_locked.is_set():
             self._paused.clear()
 
     def stop(self) -> None:
         self._stopped.set()
         self._paused.set()
+        self._pause_locked.set()
         self._enabled.clear()
 
     @property
@@ -71,6 +80,10 @@ class SafetyController:
     @property
     def stopped(self) -> bool:
         return self._stopped.is_set()
+
+    @property
+    def pause_locked(self) -> bool:
+        return self._pause_locked.is_set()
 
     def guard(self, permit: SubmissionPermit) -> None:
         if self.stopped:

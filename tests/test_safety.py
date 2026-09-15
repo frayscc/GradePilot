@@ -64,3 +64,15 @@ def test_automation_must_be_explicitly_enabled() -> None:
     with pytest.raises(AutomationBlocked, match="未启用"):
         SafeInputController(driver, safety).submit(Point(7, 8), SubmissionPermit(grade_result()))
     assert driver.actions == []
+
+
+def test_locked_review_pause_cannot_be_bypassed_by_resume() -> None:
+    safety = SafetyController()
+    safety.enable()
+    safety.lock_pause()
+    safety.resume()
+    assert safety.paused
+    assert safety.pause_locked
+    safety.unlock_pause()
+    safety.resume()
+    assert not safety.paused

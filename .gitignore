@@ -11,3 +11,6 @@ build/
 prototype/output/
 output/
 *.calibration.json
+*.db
+*.db-shm
+*.db-wal

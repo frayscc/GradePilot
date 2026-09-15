@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aigrader"
-version = "0.3.0"
-description = "AIGrader Phase 3 Windows automation and grading core"
+version = "0.4.0"
+description = "AIGrader Phase 4 monitored trial workflow and grading core"
 requires-python = ">=3.12"
 dependencies = [
   "httpx>=0.27,<1",
