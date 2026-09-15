@@ -1,0 +1,43 @@
+{
+  "task_id": "replace-me",
+  "name": "请替换为真实考试名称",
+  "question_number": "16",
+  "max_score": 2,
+  "score_step": 1,
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "rule_version": 1,
+  "question": {
+    "text": "请在正式测试前替换为完整题目文字。",
+    "image_path": null
+  },
+  "rubric": {
+    "items": [
+      {
+        "part": "1",
+        "max_score": 1,
+        "reference_answers": ["请替换"],
+        "criteria": "请替换为真实得分标准。",
+        "accepted_expressions": [],
+        "rejected_expressions": [],
+        "require_unit": false,
+        "exact_match": false,
+        "forbid_typos": false,
+        "notes": ""
+      },
+      {
+        "part": "2",
+        "max_score": 1,
+        "reference_answers": ["请替换"],
+        "criteria": "请替换为真实得分标准。",
+        "accepted_expressions": [],
+        "rejected_expressions": [],
+        "require_unit": false,
+        "exact_match": false,
+        "forbid_typos": false,
+        "notes": ""
+      }
+    ],
+    "supplemental_rules": ""
+  }
+}

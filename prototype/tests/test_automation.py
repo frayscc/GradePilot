@@ -2,8 +2,8 @@ from decimal import Decimal
 
 import pytest
 
-from aigrader_proto.automation import AutomationBlocked, AutomationContext, PauseController, Point, SafeWebAutomation
-from aigrader_proto.models import GradeResult
+from prototype.aigrader_proto.automation import AutomationBlocked, AutomationContext, PauseController, Point, SafeWebAutomation
+from prototype.aigrader_proto.models import GradeResult
 
 
 def result(*, review: bool = False) -> GradeResult:

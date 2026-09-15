@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from aigrader_proto.models import ValidationError, parse_grade_result
+from prototype.aigrader_proto.models import ValidationError, parse_grade_result
 
 
 def valid_payload() -> dict:

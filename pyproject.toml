@@ -3,14 +3,15 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aigrader-prototype"
-version = "0.0.1"
-description = "AIGrader Phase 0 Windows technical verification prototype"
+name = "aigrader"
+version = "0.1.0"
+description = "AIGrader Phase 1 core and Windows verification prototype"
 requires-python = ">=3.12"
 dependencies = [
   "httpx>=0.27,<1",
   "mss>=10,<11",
   "Pillow>=10,<12",
+  "PySide6-Essentials>=6.7,<7",
   "pyautogui>=0.9.54,<1",
   "python-dotenv>=1,<2",
 ]
@@ -20,14 +21,15 @@ dev = ["pytest>=8,<9"]
 windows = ["keyboard>=0.13.5,<1"]
 
 [project.scripts]
-aigrader-prototype = "aigrader_proto.cli:main"
+aigrader = "app.main:main"
+aigrader-prototype = "prototype.aigrader_proto.cli:main"
 
 [tool.setuptools]
-package-dir = {"" = "prototype"}
-
-[tool.setuptools.packages.find]
-where = ["prototype"]
+packages = [
+  "app", "app.ai", "app.core", "app.data", "app.ui",
+  "prototype", "prototype.aigrader_proto",
+]
 
 [tool.pytest.ini_options]
-testpaths = ["prototype/tests"]
+testpaths = ["tests", "prototype/tests"]
 addopts = "-q"

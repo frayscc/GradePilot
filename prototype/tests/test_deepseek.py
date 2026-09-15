@@ -5,8 +5,8 @@ from pathlib import Path
 
 import httpx
 
-from aigrader_proto.deepseek import DeepSeekConfig, DeepSeekProvider
-from aigrader_proto.models import GradeRequest
+from prototype.aigrader_proto.deepseek import DeepSeekConfig, DeepSeekProvider
+from prototype.aigrader_proto.models import GradeRequest
 
 
 def test_provider_sends_image_and_validates_result(tmp_path: Path) -> None:
