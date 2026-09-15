@@ -102,7 +102,7 @@ class Task:
         if self.max_score % self.score_step != 0:
             raise TaskValidationError("满分必须是分数步长的整数倍")
         if self.provider != "deepseek":
-            raise TaskValidationError("V1 Phase 1 仅实现 deepseek provider")
+            raise TaskValidationError("V1 当前仅实现 deepseek provider")
         if not self.model.strip():
             raise TaskValidationError("model 不能为空")
         if self.rule_version < 1:
@@ -110,6 +110,49 @@ class Task:
         rubric_max = sum((item.max_score for item in self.rubric.items), Decimal("0"))
         if rubric_max != self.max_score:
             raise TaskValidationError(f"各评分项满分合计 {rubric_max} 与整题满分 {self.max_score} 不一致")
+
+    def to_dict(self, *, base_dir: Path | None = None) -> dict[str, Any]:
+        image_path: str | None = None
+        if self.question.image_path is not None:
+            image_path = str(self.question.image_path)
+            if base_dir is not None:
+                try:
+                    image_path = str(self.question.image_path.relative_to(base_dir.resolve()))
+                except ValueError:
+                    pass
+
+        def number(value: Decimal) -> int | float:
+            return int(value) if value == value.to_integral_value() else float(value)
+
+        return {
+            "task_id": self.task_id,
+            "name": self.name,
+            "question_number": self.question_number,
+            "max_score": number(self.max_score),
+            "score_step": number(self.score_step),
+            "provider": self.provider,
+            "model": self.model,
+            "rule_version": self.rule_version,
+            "question": {"text": self.question.text, "image_path": image_path},
+            "rubric": {
+                "items": [
+                    {
+                        "part": item.part,
+                        "max_score": number(item.max_score),
+                        "reference_answers": list(item.reference_answers),
+                        "criteria": item.criteria,
+                        "accepted_expressions": list(item.accepted_expressions),
+                        "rejected_expressions": list(item.rejected_expressions),
+                        "require_unit": item.require_unit,
+                        "exact_match": item.exact_match,
+                        "forbid_typos": item.forbid_typos,
+                        "notes": item.notes,
+                    }
+                    for item in self.rubric.items
+                ],
+                "supplemental_rules": self.rubric.supplemental_rules,
+            },
+        }
 
     @classmethod
     def from_dict(cls, payload: Any, *, base_dir: Path) -> "Task":

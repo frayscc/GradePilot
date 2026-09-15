@@ -17,6 +17,7 @@ from app.core.task_manager import load_task
 from app.data.models import Task
 
 from .grading_panel import GradingPanel
+from .task_editor import TaskEditorDialog
 
 
 class GradeWorker(QObject):
@@ -44,9 +45,10 @@ class GradeWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self, task_path: Path | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("AI 阅卷助手 — Phase 1 Dry Run")
+        self.setWindowTitle("AI 阅卷助手 — Phase 2")
         self.resize(1200, 760)
         self.task: Task | None = None
+        self.task_path: Path | None = None
         self.image: Path | None = None
         self.thread: QThread | None = None
         self.worker: GradeWorker | None = None
@@ -56,14 +58,19 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(root)
         toolbar = QHBoxLayout()
         self.task_label = QLabel("任务：未加载")
-        load_button = QPushButton("加载任务 JSON")
+        new_button = QPushButton("新建任务")
+        load_button = QPushButton("打开任务")
+        self.edit_button = QPushButton("编辑任务")
+        self.edit_button.setEnabled(False)
         image_button = QPushButton("选择学生答案图片")
         self.grade_button = QPushButton("识别当前卷（Dry Run）")
         self.grade_button.setEnabled(False)
+        new_button.clicked.connect(self.new_task)
         load_button.clicked.connect(self.choose_task)
+        self.edit_button.clicked.connect(self.edit_task)
         image_button.clicked.connect(self.choose_image)
         self.grade_button.clicked.connect(self.grade)
-        for widget in (load_button, image_button, self.grade_button, self.task_label):
+        for widget in (new_button, load_button, self.edit_button, image_button, self.grade_button, self.task_label):
             toolbar.addWidget(widget)
         layout.addLayout(toolbar)
 
@@ -86,11 +93,34 @@ class MainWindow(QMainWindow):
         if value:
             self.open_task(Path(value))
 
+    def new_task(self) -> None:
+        value, _ = QFileDialog.getSaveFileName(self, "新建任务", "task.json", "JSON (*.json)")
+        if not value:
+            return
+        path = Path(value)
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(".json")
+        editor = TaskEditorDialog(path, parent=self)
+        editor.task_saved.connect(self._on_task_saved)
+        editor.exec()
+
+    def edit_task(self) -> None:
+        if self.task is None or self.task_path is None:
+            return
+        editor = TaskEditorDialog(self.task_path, self.task, self)
+        editor.task_saved.connect(self._on_task_saved)
+        editor.exec()
+
+    def _on_task_saved(self, path: Path, task: Task) -> None:
+        self.task_path = path
+        self.task = task
+        self.task_label.setText(f"任务：{task.name} 第{task.question_number}题 · 规则 v{task.rule_version}")
+        self._refresh_button()
+
     def open_task(self, path: Path) -> None:
         try:
-            self.task = load_task(path)
-            self.task_label.setText(f"任务：{self.task.name} 第{self.task.question_number}题 · 规则 v{self.task.rule_version}")
-            self._refresh_button()
+            task = load_task(path)
+            self._on_task_saved(path.resolve(), task)
         except Exception as exc:
             QMessageBox.critical(self, "任务无效", str(exc))
 
@@ -104,6 +134,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_button(self) -> None:
         self.grade_button.setEnabled(self.task is not None and self.image is not None and self.thread is None)
+        self.edit_button.setEnabled(self.task is not None and self.task_path is not None)
 
     def grade(self) -> None:
         if self.task is None or self.image is None:

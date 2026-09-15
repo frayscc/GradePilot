@@ -1,1 +1,1 @@
-"""PySide6 user interface for Phase 1 dry runs."""
+"""PySide6 task configuration and dry-run interface."""
