@@ -73,6 +73,9 @@ def main() -> int:
     load_dotenv()
     args = parser().parse_args()
     if args.command == "ui":
+        from app.core.automation import enable_windows_dpi_awareness
+
+        enable_windows_dpi_awareness()
         from PySide6.QtWidgets import QApplication
         from app.ui.main_window import MainWindow
 
