@@ -24,7 +24,7 @@ from app.core.task_manager import load_task
 from app.core.trial_service import TrialService
 from app.data.calibration import CalibrationProfile
 from app.data.models import Task
-from app.data.paths import user_data_dir
+from app.data.paths import user_data_dir, user_tasks_dir
 from app.data.repository import TrialRepository
 from app.data.run_logs import RunLogRepository
 from app.data.trial_models import ErrorCategory, TrialRecord
@@ -150,7 +150,7 @@ class AutomationWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self, task_path: Path | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("AI 阅卷助手 — Phase 5")
+        self.setWindowTitle("AI 阅卷助手 — Phase 6")
         self.resize(1200, 760)
         self.task: Task | None = None
         self.task_path: Path | None = None
@@ -269,12 +269,16 @@ class MainWindow(QMainWindow):
             self.open_task(task_path)
 
     def choose_task(self) -> None:
-        value, _ = QFileDialog.getOpenFileName(self, "选择任务", filter="JSON (*.json)")
+        value, _ = QFileDialog.getOpenFileName(
+            self, "选择任务", str(user_tasks_dir()), "JSON (*.json)"
+        )
         if value:
             self.open_task(Path(value))
 
     def new_task(self) -> None:
-        value, _ = QFileDialog.getSaveFileName(self, "新建任务", "task.json", "JSON (*.json)")
+        value, _ = QFileDialog.getSaveFileName(
+            self, "新建任务", str(user_tasks_dir() / "task.json"), "JSON (*.json)"
+        )
         if not value:
             return
         path = Path(value)

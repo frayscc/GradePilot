@@ -1,6 +1,6 @@
 # AIGrader / AI 阅卷助手
 
-当前进度：**Phase 5 自动模式**。自动模式只能在持久化的 100 份试改达到用户阈值、且所有主动复核均已处理后，由用户显式确认启用。它支持默认 100 份连续上限或无限制运行，并在复核、网络、结果验证、页面确认或人工暂停时保持安全停止。
+当前进度：**Phase 6 Windows Portable**。项目包含 Windows x64 的 PyInstaller onedir 构建、ZIP 打包脚本和 GitHub Actions；无需安装 Python、无需管理员权限，解压后运行 `AIGrader.exe`。自动模式仍保持 Phase 5 的试改门槛和全部安全暂停条件。
 
 原型用于逐项验证固定区域截图、DeepSeek 视觉识别与结构化评分、坐标输入和显式确认后的提交。所有 AI 输出都会先做硬验证；`need_review`、非法分数、无效 JSON、未显式启用或暂停状态均禁止网页操作。
 
@@ -37,6 +37,38 @@ aigrader ui
 编辑停止 600 毫秒后会尝试自动保存。只有配置通过完整校验时才会原子替换任务文件；编辑到一半导致字段暂时不完整时，磁盘上的上一份有效版本不会损坏。选择的题图会复制到任务文件旁的 `<任务名>_assets` 目录，避免原图片移动后任务失效。
 
 整题满分必须与各空满分合计一致，可点击“按各空合计更新满分”。已有任务可通过“打开任务”后点击“编辑任务”继续修改。
+
+## Phase 6：Windows Portable
+
+使用条件：
+
+- Windows 10/11 x64
+- 浏览器窗口及智学网页面布局固定
+- 推荐 Windows 显示缩放 100%
+- DeepSeek API Key
+
+从 GitHub Actions 下载 `AIGrader-v0.6.0-Windows-x64.zip`，完整解压 `AIGrader-Windows-x64` 文件夹后双击 `AIGrader.exe`。不能只复制 EXE，因为旁边的运行库也是程序的一部分。程序不需要管理员权限，也不执行安装。
+
+首次使用：
+
+1. 在 `%LOCALAPPDATA%\AIGrader\.env` 写入 `DEEPSEEK_API_KEY=你的密钥`。
+2. 新建阅卷任务，配置题目和评分标准。
+3. 标定答案区域、分数输入框、提交按钮和阅卷进度标记。
+4. 用 Dry Run 检查真实答案。
+5. 开启试改模式并完成准确率确认。
+6. 达到参考条件后，由用户显式开启自动模式。
+
+新建任务默认保存在 `%LOCALAPPDATA%\AIGrader\tasks`，标定保存在任务旁；数据库、日志和异常截图也位于 `%LOCALAPPDATA%\AIGrader`。更新程序时只替换解压后的程序文件夹，不会自动删除用户数据目录或历史任务。已有其他位置的任务仍可通过“打开任务”选择。
+
+开发者在 Windows PowerShell 中可以运行：
+
+```powershell
+python -m pip install -e ".[dev,windows,portable]"
+pytest
+./scripts/build_windows.ps1 -Version "0.6.0"
+```
+
+输出为 `dist/AIGrader-Windows-x64/` 和 `dist/AIGrader-v0.6.0-Windows-x64.zip`。macOS 不交叉生成 Windows EXE；仓库的 [Windows 构建工作流](.github/workflows/windows-build.yml) 使用 `windows-latest`、Python 3.12 x64，先测试再打包并上传 artifact。推送 `v*` 标签时还会自动创建 GitHub Release。真实无 Python 环境验收见 [Phase 6 清单](PHASE6_CHECKLIST.md)。
 
 ## Phase 5：自动模式
 

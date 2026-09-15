@@ -10,3 +10,9 @@ def user_data_dir() -> Path:
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "AIGrader"
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "AIGrader"
+
+
+def user_tasks_dir() -> Path:
+    path = user_data_dir() / "tasks"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
