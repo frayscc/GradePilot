@@ -110,6 +110,10 @@ def test_api_retries_after_two_and_five_seconds() -> None:
     assert record.submitted is True
     assert provider.calls == 3
     assert round(sum(clock.sleeps), 6) == 7
+    assert record.latency_ms == 7000
+    assert record.api_success
+    assert record.score_entered
+    assert record.submit_clicked
 
 
 def test_three_api_failures_pause_without_input() -> None:
@@ -173,3 +177,54 @@ def test_resume_restarts_same_paper_before_any_submit() -> None:
     assert len(records) == 1 and records[0].submitted
     assert platform.actions.count("capture") == 2
     assert platform.actions.count("submit") == 1
+
+
+def test_unlimited_run_has_no_hidden_batch_cap() -> None:
+    safety = active_safety()
+
+    class StopAfterThreePlatform(FakePlatform):
+        def wait_next(self, before: PageSnapshot, current_safety: SafetyController) -> None:
+            super().wait_next(before, current_safety)
+            if self.actions.count("submit") == 3:
+                current_safety.stop()
+
+    platform = StopAfterThreePlatform()
+    records = asyncio.run(
+        AutomationSession(
+            make_task(), SequenceProvider([parsed_result()] * 3), platform, safety,
+            AutomationSettings(observation_delay=0),
+        ).run_many(None)
+    )
+    assert sum(record.submitted for record in records) == 3
+    assert records[-1].state == RunState.STOPPED
+
+
+def test_one_hundred_papers_run_serially_without_drift() -> None:
+    platform = FakePlatform()
+    records = asyncio.run(
+        AutomationSession(
+            make_task(), SequenceProvider([parsed_result()] * 100), platform,
+            active_safety(), AutomationSettings(observation_delay=0),
+        ).run_many(100)
+    )
+    assert len(records) == 100
+    assert all(record.submitted and record.state == RunState.WAIT_NEXT for record in records)
+    assert platform.actions.count("capture") == 100
+    assert platform.actions.count("submit") == 100
+
+
+def test_batch_stops_at_first_api_error_without_touching_next_paper() -> None:
+    platform = FakePlatform()
+    provider = SequenceProvider([
+        ProviderError("one"), ProviderError("two"), ProviderError("three"), parsed_result()
+    ])
+    records = asyncio.run(
+        AutomationSession(
+            make_task(), provider, platform, active_safety(),
+            AutomationSettings(observation_delay=0), sleeper=lambda _seconds: None,
+        ).run_many(100)
+    )
+    assert len(records) == 1
+    assert records[0].state == RunState.API_ERROR
+    assert platform.actions.count("capture") == 1
+    assert platform.actions.count("submit") == 0

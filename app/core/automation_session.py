@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import tempfile
 import time
+from dataclasses import replace
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from itertools import count as infinite_count
 from pathlib import Path
 
 from app.ai.base import AIProvider, ProviderError
@@ -31,6 +34,12 @@ class AutomationRunResult:
     result: GradeResult | None
     submitted: bool
     error: str | None
+    started_at: str = ""
+    completed_at: str = ""
+    latency_ms: int | None = None
+    api_success: bool = False
+    score_entered: bool = False
+    submit_clicked: bool = False
 
 
 class AutomationSession:
@@ -62,6 +71,7 @@ class AutomationSession:
         self.capture_directory = capture_directory
         self.sleeper = sleeper
         self.clock = clock
+        self.last_latency_ms: int | None = None
 
     def emit(self, state: RunState, message: str) -> None:
         self.on_state(state, message)
@@ -77,10 +87,12 @@ class AutomationSession:
 
     async def request_with_retry(self, image: Path) -> GradeResult:
         last_error: ProviderError | None = None
+        request_started = self.clock()
         for attempt in range(3):
             self.emit(RunState.AI_REQUEST, f"请求 AI（第 {attempt + 1}/3 次）")
             try:
                 result = await self.provider.grade(GradeRequest(self.task, image))
+                self.last_latency_ms = round((self.clock() - request_started) * 1000)
                 self.emit(RunState.AI_VALIDATION, "AI JSON 与分数验证通过")
                 return result
             except ProviderError as exc:
@@ -89,6 +101,7 @@ class AutomationSession:
                     break
                 self.interruptible_wait(self.settings.retry_delays[attempt])
         assert last_error is not None
+        self.last_latency_ms = round((self.clock() - request_started) * 1000)
         raise last_error
 
     async def run_one(self, index: int) -> AutomationRunResult:
@@ -109,6 +122,21 @@ class AutomationSession:
     async def _run_one_with_image(self, index: int, image: Path) -> AutomationRunResult:
         result: GradeResult | None = None
         submission_clicked = False
+        score_entered = False
+        started_at = datetime.now(timezone.utc).isoformat()
+        self.last_latency_ms = None
+
+        def finish(state: RunState, submitted: bool, error: str | None) -> AutomationRunResult:
+            return AutomationRunResult(
+                index, state, result, submitted, error,
+                started_at=started_at,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                latency_ms=self.last_latency_ms,
+                api_success=result is not None,
+                score_entered=score_entered,
+                submit_clicked=submission_clicked,
+            )
+
         try:
             if not self.safety.enabled or self.safety.stopped or self.safety.paused:
                 raise AutomationBlocked("自动化尚未处于可运行状态")
@@ -121,7 +149,7 @@ class AutomationSession:
             if result.need_review:
                 self.safety.pause()
                 self.emit(RunState.NEED_REVIEW, result.review_reason or "AI 要求人工复核")
-                return AutomationRunResult(index, RunState.NEED_REVIEW, result, False, result.review_reason)
+                return finish(RunState.NEED_REVIEW, False, result.review_reason)
             self.emit(RunState.SHOW_RESULT, f"AI 得分 {result.total_score}/{result.max_score}")
             permit = SubmissionPermit(result)
             self.emit(RunState.OBSERVATION_DELAY, f"观察 {self.settings.observation_delay:.1f} 秒")
@@ -130,6 +158,7 @@ class AutomationSession:
             self.platform.assert_same_answer(initial_page)
             self.emit(RunState.ENTER_SCORE, f"填写分数 {result.total_score}")
             self.platform.enter_score(permit)
+            score_entered = True
             self.safety.guard(permit)
             before_submit = self.platform.snapshot_page()
             self.emit(RunState.SUBMIT, "提交前最终安全检查通过")
@@ -137,41 +166,42 @@ class AutomationSession:
             submission_clicked = True
             self.emit(RunState.WAIT_NEXT, "等待下一份页面")
             self.platform.wait_next(before_submit, self.safety)
-            return AutomationRunResult(index, RunState.WAIT_NEXT, result, True, None)
+            return finish(RunState.WAIT_NEXT, True, None)
         except ResultValidationError as exc:
             self.safety.pause()
             self.emit(RunState.VALIDATION_ERROR, str(exc))
-            return AutomationRunResult(index, RunState.VALIDATION_ERROR, result, False, str(exc))
+            return finish(RunState.VALIDATION_ERROR, False, str(exc))
         except ProviderError as exc:
             self.safety.pause()
             self.emit(RunState.API_ERROR, str(exc))
-            return AutomationRunResult(index, RunState.API_ERROR, result, False, str(exc))
+            return finish(RunState.API_ERROR, False, str(exc))
         except PageTransitionError as exc:
             self.safety.pause()
             message = f"提交点击已执行，但下一页未确认：{exc}" if submission_clicked else str(exc)
             self.emit(RunState.PAGE_ERROR, message)
-            return AutomationRunResult(index, RunState.PAGE_ERROR, result, False, message)
+            return finish(RunState.PAGE_ERROR, False, message)
         except AutomationBlocked as exc:
             if submission_clicked:
                 self.safety.stop()
                 message = f"提交点击已执行，但等待下一页时中止：{exc}。已停止，禁止自动重试本份"
                 self.emit(RunState.PAGE_ERROR, message)
-                return AutomationRunResult(index, RunState.PAGE_ERROR, result, False, message)
+                return finish(RunState.PAGE_ERROR, False, message)
             state = RunState.STOPPED if self.safety.stopped else RunState.PAUSED
             self.emit(state, str(exc))
-            return AutomationRunResult(index, state, result, False, str(exc))
+            return finish(state, False, str(exc))
         except Exception as exc:
             self.safety.stop()
             self.emit(RunState.STOPPED, f"未预期异常：{exc}")
-            return AutomationRunResult(index, RunState.STOPPED, result, False, str(exc))
+            return finish(RunState.STOPPED, False, str(exc))
 
-    async def run_many(self, count: int, *, start_index: int = 1) -> list[AutomationRunResult]:
-        if count < 1:
+    async def run_many(self, count: int | None, *, start_index: int = 1) -> list[AutomationRunResult]:
+        if count is not None and count < 1:
             raise ValueError("处理份数至少为 1")
         if start_index < 1:
             raise ValueError("起始序号至少为 1")
         records: list[AutomationRunResult] = []
-        for index in range(start_index, start_index + count):
+        indexes = infinite_count(start_index) if count is None else range(start_index, start_index + count)
+        for index in indexes:
             while True:
                 record = await self.run_one(index)
                 if record.state != RunState.PAUSED:
@@ -181,7 +211,12 @@ class AutomationSession:
                 while self.safety.paused and not self.safety.stopped:
                     self.sleeper(0.1)
                 if self.safety.stopped:
-                    record = AutomationRunResult(index, RunState.STOPPED, record.result, False, "自动化已紧急停止")
+                    record = replace(
+                        record,
+                        state=RunState.STOPPED,
+                        error="自动化已紧急停止",
+                        completed_at=datetime.now(timezone.utc).isoformat(),
+                    )
                     records.append(record)
                     break
             if records[-1].state != RunState.WAIT_NEXT or not records[-1].submitted:

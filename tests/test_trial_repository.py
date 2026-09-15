@@ -127,3 +127,13 @@ def test_one_hundred_paper_trial_report(tmp_path: Path) -> None:
     assert report["meets_automatic_mode_reference"] is True
     assert report["automatic_mode_enabled"] is False
     assert sum(report["error_categories"].values()) == 15
+    qualified = repository.latest_qualifying_session(make_task().task_id)
+    assert qualified is not None
+    assert qualified.session_id == service.session.session_id
+
+
+def test_unresolved_review_cannot_unlock_automatic_mode(tmp_path: Path) -> None:
+    repository, service = setup_trial(tmp_path, target=1, threshold="100")
+    add_record(service, tmp_path, 1, review=True)
+    assert service.metrics().meets_reference_condition
+    assert repository.latest_qualifying_session(make_task().task_id) is None

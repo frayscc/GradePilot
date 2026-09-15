@@ -1,12 +1,23 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import app.core.task_manager as task_manager
-from app.core.task_manager import load_task, save_task, store_question_image
+from app.core.task_manager import ensure_rule_version, load_task, save_task, store_question_image
 
 from .helpers import make_task
+
+
+def test_grading_change_increments_rule_version() -> None:
+    original = make_task()
+    changed = replace(original, rubric=replace(
+        original.rubric, supplemental_rules="新增规则"
+    ))
+    assert ensure_rule_version(original, changed).rule_version == original.rule_version + 1
+    renamed = replace(original, name="只改任务名称")
+    assert ensure_rule_version(original, renamed).rule_version == original.rule_version
 
 
 def test_save_and_load_round_trip(tmp_path: Path) -> None:

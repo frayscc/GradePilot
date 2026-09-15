@@ -249,3 +249,24 @@ class TrialRepository:
             if row["error_category"] in counts:
                 counts[row["error_category"]] = int(row["total"])
         return counts
+
+    def latest_qualifying_session(self, task_id: str) -> TrialSession | None:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM trial_sessions WHERE task_id = ? ORDER BY started_at DESC",
+                (task_id,),
+            ).fetchall()
+        for row in rows:
+            metrics = self.metrics(row["session_id"])
+            with self.connect() as connection:
+                unresolved_reviews = connection.execute(
+                    """SELECT COUNT(*) AS total FROM trial_records
+                    WHERE session_id = ? AND need_review = 1 AND outcome = ?""",
+                    (row["session_id"], ReviewOutcome.UNREVIEWED.value),
+                ).fetchone()["total"]
+            if metrics.meets_reference_condition and not unresolved_reviews:
+                return TrialSession(
+                    row["session_id"], row["task_id"], int(row["target_count"]),
+                    Decimal(row["error_threshold_percent"]), row["started_at"],
+                )
+        return None

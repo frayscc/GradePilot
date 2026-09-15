@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core.task_manager import save_task, store_question_image
+from app.core.task_manager import ensure_rule_version, save_task, store_question_image
 from app.data.models import Question, Rubric, RubricItem, Task
 
 
@@ -133,6 +133,7 @@ class TaskEditorDialog(QDialog):
     def __init__(self, task_path: Path, task: Task | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.task_path = task_path.resolve()
+        self.original_task = task
         self.dirty = False
         self.item_editors: list[RubricItemEditor] = []
         self.setWindowTitle("编辑阅卷任务" if task else "新建阅卷任务")
@@ -297,7 +298,7 @@ class TaskEditorDialog(QDialog):
         self.schedule_save()
 
     def build_task(self) -> Task:
-        return Task(
+        task = Task(
             task_id=self.task_id.text().strip(),
             name=self.name.text().strip(),
             question_number=self.question_number.text().strip(),
@@ -309,6 +310,13 @@ class TaskEditorDialog(QDialog):
             question=Question(self.question_text.toPlainText().strip(), self.question_image_path),
             rubric=Rubric(tuple(editor.to_model() for editor in self.item_editors), self.supplemental.toPlainText().strip()),
         )
+        versioned = ensure_rule_version(self.original_task, task)
+        if versioned.rule_version != task.rule_version:
+            task = versioned
+            self.rule_version.blockSignals(True)
+            self.rule_version.setValue(task.rule_version)
+            self.rule_version.blockSignals(False)
+        return task
 
     def schedule_save(self) -> None:
         self.dirty = True

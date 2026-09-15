@@ -24,7 +24,7 @@ def provider_from_env() -> DeepSeekProvider:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="AIGrader Phase 2")
+    root = argparse.ArgumentParser(description="AIGrader Phase 5")
     sub = root.add_subparsers(dest="command", required=True)
     ui = sub.add_parser("ui", help="启动 AI 评分结果界面")
     ui.add_argument("--task", type=Path)

@@ -26,6 +26,7 @@ from app.data.calibration import CalibrationProfile
 from app.data.models import Task
 from app.data.paths import user_data_dir
 from app.data.repository import TrialRepository
+from app.data.run_logs import RunLogRepository
 from app.data.trial_models import ErrorCategory, TrialRecord
 from app.platforms.zhixue import ZhixuePlatform
 
@@ -68,11 +69,13 @@ class AutomationWorker(QObject):
         task: Task,
         profile: CalibrationProfile,
         safety: SafetyController,
-        count: int,
+        count: int | None,
         observation_delay: float,
         start_index: int = 1,
         trial_service: TrialService | None = None,
         capture_directory: Path | None = None,
+        log_repository: RunLogRepository | None = None,
+        mode: str = "trial",
     ) -> None:
         super().__init__()
         self.task = task
@@ -83,6 +86,8 @@ class AutomationWorker(QObject):
         self.start_index = start_index
         self.trial_service = trial_service
         self.capture_directory = capture_directory
+        self.log_repository = log_repository
+        self.mode = mode
 
     def run(self) -> None:
         remove_hotkeys = lambda: None
@@ -107,16 +112,17 @@ class AutomationWorker(QObject):
                 )
 
             def completed(record, image: Path) -> None:
-                if self.trial_service is None or record.result is None:
-                    return
-                trial_record = self.trial_service.repository.get_record_for_sequence(
-                    self.trial_service.session.session_id, record.index
-                )
-                self.trial_service.complete_automation(trial_record.record_id, record)
-                trial_record = self.trial_service.repository.get_record(trial_record.record_id)
-                self.trial_record_ready.emit(
-                    trial_record, str(image), record.result, self.trial_service.metrics()
-                )
+                if self.log_repository is not None:
+                    self.log_repository.add(self.task, record, self.mode, image)
+                if self.trial_service is not None and record.result is not None:
+                    trial_record = self.trial_service.repository.get_record_for_sequence(
+                        self.trial_service.session.session_id, record.index
+                    )
+                    self.trial_service.complete_automation(trial_record.record_id, record)
+                    trial_record = self.trial_service.repository.get_record(trial_record.record_id)
+                    self.trial_record_ready.emit(
+                        trial_record, str(image), record.result, self.trial_service.metrics()
+                    )
 
             session = AutomationSession(
                 self.task,
@@ -144,7 +150,7 @@ class AutomationWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self, task_path: Path | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("AI 阅卷助手 — Phase 4")
+        self.setWindowTitle("AI 阅卷助手 — Phase 5")
         self.resize(1200, 760)
         self.task: Task | None = None
         self.task_path: Path | None = None
@@ -160,6 +166,14 @@ class MainWindow(QMainWindow):
         self.trial_service: TrialService | None = None
         self.trial_temp: tempfile.TemporaryDirectory | None = None
         self.trial_screenshots: dict[str, Path] = {}
+        data_root = user_data_dir()
+        self.run_log_repository = RunLogRepository(
+            data_root / "trials.db", data_root / "exception_screenshots"
+        )
+        self.automatic_qualified = False
+        self.automatic_next_index = 1
+        self.active_mode = "trial"
+        self.automatic_has_run = False
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -189,8 +203,8 @@ class MainWindow(QMainWindow):
         self.calibrate_button = QPushButton("坐标标定")
         self.calibration_label = QLabel("标定：未加载")
         self.run_count = QSpinBox()
-        self.run_count.setRange(1, 20)
-        self.run_count.setValue(1)
+        self.run_count.setRange(1, 10000)
+        self.run_count.setValue(100)
         self.observation_delay = QDoubleSpinBox()
         self.observation_delay.setRange(0, 5)
         self.observation_delay.setSingleStep(0.5)
@@ -201,10 +215,17 @@ class MainWindow(QMainWindow):
         self.stop_button = QPushButton("紧急停止 Ctrl+Alt+Q")
         self.trial_mode = QCheckBox("试改模式")
         self.trial_mode.setChecked(True)
+        self.automatic_mode = QPushButton("启用自动模式")
+        self.automatic_mode.setCheckable(True)
+        self.automatic_mode.setEnabled(False)
+        self.unlimited_mode = QCheckBox("无限制")
         self.run_count.setEnabled(False)
-        self.trial_mode.toggled.connect(
-            lambda checked: self.run_count.setEnabled(not checked and self.automation_thread is None)
-        )
+        self.unlimited_mode.setEnabled(False)
+        self.trial_mode.toggled.connect(self.on_trial_mode_toggled)
+        self.automatic_mode.toggled.connect(self.on_automatic_mode_toggled)
+        self.unlimited_mode.toggled.connect(lambda checked: self.run_count.setEnabled(
+            not checked and self.automatic_mode.isChecked() and self.automation_thread is None
+        ))
         self.start_button.setEnabled(False)
         self.pause_button.setEnabled(False)
         self.resume_button.setEnabled(False)
@@ -217,7 +238,8 @@ class MainWindow(QMainWindow):
         for widget in (
             self.calibrate_button, self.calibration_label, QLabel("连续份数"), self.run_count,
             QLabel("观察秒数"), self.observation_delay, self.start_button,
-            self.trial_mode, self.pause_button, self.resume_button, self.stop_button,
+            self.trial_mode, self.automatic_mode, self.unlimited_mode,
+            self.pause_button, self.resume_button, self.stop_button,
         ):
             automation_bar.addWidget(widget)
         layout.addLayout(automation_bar)
@@ -265,6 +287,11 @@ class MainWindow(QMainWindow):
     def edit_task(self) -> None:
         if self.task is None or self.task_path is None:
             return
+        if self.automation_thread is not None:
+            if self.safety is None or not self.safety.paused:
+                QMessageBox.information(self, "请先暂停", "修改评分规则前请先按 F8 暂停自动阅卷。")
+                return
+            self.safety.stop()
         editor = TaskEditorDialog(self.task_path, self.task, self)
         editor.task_saved.connect(self._on_task_saved)
         editor.exec()
@@ -276,6 +303,7 @@ class MainWindow(QMainWindow):
         self.task = task
         self.trial_panel.set_score_step(task.score_step)
         self.task_label.setText(f"任务：{task.name} 第{task.question_number}题 · 规则 v{task.rule_version}")
+        self.automatic_next_index = self.run_log_repository.next_index(task.task_id)
         self.calibration_path = path.with_suffix(".calibration.json")
         try:
             self.calibration = load_calibration(self.calibration_path)
@@ -283,7 +311,18 @@ class MainWindow(QMainWindow):
         except Exception:
             self.calibration = None
             self.calibration_label.setText("标定：未完成")
+        self._refresh_automatic_eligibility()
         self._refresh_button()
+
+    def _refresh_automatic_eligibility(self) -> None:
+        self.automatic_qualified = False
+        if self.task is not None:
+            repository = TrialRepository(
+                user_data_dir() / "trials.db", user_data_dir() / "review_screenshots"
+            )
+            self.automatic_qualified = repository.latest_qualifying_session(self.task.task_id) is not None
+        if not self.automatic_qualified and self.automatic_mode.isChecked():
+            self.automatic_mode.setChecked(False)
 
     def calibrate(self) -> None:
         if self.task_path is None:
@@ -318,16 +357,54 @@ class MainWindow(QMainWindow):
     def _refresh_button(self) -> None:
         idle = self.thread is None and self.automation_thread is None
         self.grade_button.setEnabled(self.task is not None and self.image is not None and idle)
-        self.edit_button.setEnabled(self.task is not None and self.task_path is not None and idle)
+        paused_for_edit = bool(self.automation_thread is not None and self.safety and self.safety.paused)
+        self.edit_button.setEnabled(
+            self.task is not None and self.task_path is not None and (idle or paused_for_edit)
+        )
         self.calibrate_button.setEnabled(self.task_path is not None and idle)
         calibrated = self.calibration is not None and self.calibration.page_marker is not None
-        self.start_button.setEnabled(self.task is not None and calibrated and idle)
+        mode_ready = self.trial_mode.isChecked() or (
+            self.automatic_mode.isChecked() and self.automatic_qualified
+        )
+        self.start_button.setEnabled(self.task is not None and calibrated and idle and mode_ready)
         self.new_button.setEnabled(idle)
         self.load_button.setEnabled(idle)
         self.image_button.setEnabled(idle)
-        self.run_count.setEnabled(idle and not self.trial_mode.isChecked())
+        self.run_count.setEnabled(
+            idle and self.automatic_mode.isChecked() and not self.unlimited_mode.isChecked()
+        )
         self.observation_delay.setEnabled(idle)
         self.trial_mode.setEnabled(idle)
+        self.automatic_mode.setEnabled(idle and self.automatic_qualified)
+        self.unlimited_mode.setEnabled(idle and self.automatic_mode.isChecked())
+
+    def on_trial_mode_toggled(self, checked: bool) -> None:
+        if checked and self.automatic_mode.isChecked():
+            self.automatic_mode.setChecked(False)
+        self._refresh_button()
+
+    def on_automatic_mode_toggled(self, checked: bool) -> None:
+        if checked:
+            if not self.automatic_qualified:
+                self.automatic_mode.setChecked(False)
+                return
+            answer = QMessageBox.warning(
+                self,
+                "显式启用自动模式",
+                "自动模式会连续向智学网真实提交分数。它仍会在复核、网络、验证或页面异常时停止。确认由你主动启用？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.automatic_mode.setChecked(False)
+                return
+            self.trial_mode.setChecked(False)
+            self.automatic_mode.setText("自动模式已启用")
+        else:
+            self.automatic_mode.setText("启用自动模式")
+            if not self.trial_mode.isChecked():
+                self.trial_mode.setChecked(True)
+        self._refresh_button()
 
     def grade(self) -> None:
         if self.task is None or self.image is None:
@@ -364,6 +441,7 @@ class MainWindow(QMainWindow):
         start_index = 1
         capture_directory = None
         trial_service = None
+        mode = "trial"
         if self.trial_mode.isChecked():
             if self.trial_service is None or self.trial_service.task.task_id != self.task.task_id:
                 self._create_trial_session()
@@ -378,12 +456,18 @@ class MainWindow(QMainWindow):
             trial_service = self.trial_service
             assert self.trial_temp is not None
             capture_directory = Path(self.trial_temp.name)
+        elif self.automatic_mode.isChecked() and self.automatic_qualified:
+            mode = "automatic"
+            count = None if self.unlimited_mode.isChecked() else self.run_count.value()
+            start_index = self.automatic_next_index
         else:
-            count = self.run_count.value()
+            QMessageBox.warning(self, "模式未启用", "请使用试改模式，或在试改达标后显式启用自动模式。")
+            return
+        count_text = "不设上限" if count is None else f"最多 {count} 份"
         answer = QMessageBox.warning(
             self,
             "确认真实提交",
-            f"将连续处理最多 {count} 份并真实填写、提交分数。请保持浏览器布局不变。是否继续？",
+            f"将连续处理{count_text}并真实填写、提交分数。请保持浏览器布局不变。是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -401,6 +485,8 @@ class MainWindow(QMainWindow):
             start_index,
             trial_service,
             capture_directory,
+            self.run_log_repository,
+            mode,
         )
         self.automation_worker.moveToThread(self.automation_thread)
         self.automation_thread.started.connect(self.automation_worker.run)
@@ -414,6 +500,7 @@ class MainWindow(QMainWindow):
         self.pause_button.setEnabled(True)
         self.stop_button.setEnabled(True)
         self.trial_panel.set_running(True)
+        self.active_mode = mode
         self._refresh_button()
         self.automation_thread.start()
 
@@ -458,11 +545,23 @@ class MainWindow(QMainWindow):
         elif self.automation_thread is not None:
             self.pause_button.setEnabled(True)
             self.resume_button.setEnabled(False)
+        self._refresh_button()
 
     def on_automation_finished(self, records: list) -> None:
         submitted = sum(record.submitted for record in records)
         last_error = records[-1].error if records and records[-1].error else None
         message = f"已成功提交 {submitted} 份。"
+        if self.active_mode == "automatic" and records:
+            last = records[-1]
+            self.automatic_next_index = last.index + (1 if last.submitted else 0)
+            self.automatic_has_run = True
+            limit_reached = (
+                not self.unlimited_mode.isChecked()
+                and len(records) == self.run_count.value()
+                and all(record.submitted for record in records)
+            )
+            if limit_reached:
+                message += "\n已达到连续处理上限并自动暂停；请检查后点击开始继续。"
         if last_error:
             message += f"\n已安全停止：{last_error}"
         QMessageBox.information(self, "自动化测试结束", message)
@@ -477,6 +576,7 @@ class MainWindow(QMainWindow):
         self.resume_button.setEnabled(False)
         self.stop_button.setEnabled(False)
         self.trial_panel.set_running(False)
+        self._refresh_automatic_eligibility()
         self._refresh_button()
 
     def _create_trial_session(self) -> None:
@@ -542,6 +642,7 @@ class MainWindow(QMainWindow):
         self.trial_screenshots[record.record_id] = Path(screenshot)
         self.trial_panel.set_current(record, result)
         self.trial_panel.show_metrics(metrics)
+        self._refresh_automatic_eligibility()
 
     def mark_trial_correct(self, record_id: str, correct_score: Decimal) -> None:
         if self.trial_service is None:
@@ -550,6 +651,7 @@ class MainWindow(QMainWindow):
             self.trial_service.mark_ai_correct(record_id, correct_score)
             self.trial_panel.show_metrics(self.trial_service.metrics())
             self.trial_panel.clear_current()
+            self._refresh_automatic_eligibility()
         except Exception as exc:
             QMessageBox.critical(self, "记录失败", str(exc))
 
@@ -571,6 +673,7 @@ class MainWindow(QMainWindow):
             self.trial_service.mark_ai_error(record_id, screenshot, correct_score, category, note)
             self.trial_panel.show_metrics(self.trial_service.metrics())
             self.trial_panel.clear_current()
+            self._refresh_automatic_eligibility()
             self.stop_automation()
         except Exception as exc:
             self.cancel_trial_review()

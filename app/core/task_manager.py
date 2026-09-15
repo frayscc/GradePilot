@@ -1,13 +1,27 @@
+from __future__ import annotations
+
 import json
 import os
 import shutil
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from app.data.models import Task, TaskValidationError
 
 
 SUPPORTED_QUESTION_IMAGES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+
+def grading_signature(task: Task) -> tuple:
+    return task.max_score, task.score_step, task.question, task.rubric
+
+
+def ensure_rule_version(original: Task | None, updated: Task) -> Task:
+    """Increment the version when grading inputs changed and the user did not."""
+    if original is None or grading_signature(original) == grading_signature(updated):
+        return updated
+    return replace(updated, rule_version=max(updated.rule_version, original.rule_version + 1))
 
 
 def load_task(path: Path) -> Task:
